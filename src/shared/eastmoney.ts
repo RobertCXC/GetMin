@@ -245,24 +245,27 @@ function emptyQuote(stock: Stock, status: Quote["status"] = "empty"): Quote {
   };
 }
 
-function quoteFromRecord(stock: Stock, record: EastmoneyRecord): Quote {
-  const price = numberValue(record.f2, record.f43);
+function quoteFromRecord(stock: Stock, record: EastmoneyRecord, source: "batch" | "detail"): Quote {
+  // The same field number can mean different things in the batch and detail APIs.
+  // In particular, batch f43/f170 must not replace missing pre-market f2/f3.
+  const batch = source === "batch";
+  const price = numberValue(batch ? record.f2 : record.f43);
   const quote: Quote = {
     ...emptyQuote(stock),
     price,
-    change: numberValue(record.f4, record.f169),
-    changePercent: numberValue(record.f3, record.f170),
-    open: numberValue(record.f17, record.f46),
-    high: numberValue(record.f15, record.f44),
-    low: numberValue(record.f16, record.f45),
-    prevClose: numberValue(record.f18, record.f60),
-    volume: numberValue(record.f5, record.f47),
-    amount: numberValue(record.f6, record.f48),
-    turnoverRate: numberValue(record.f8, record.f168, record.f51),
-    pe: numberValue(record.f9, record.f162),
-    pb: numberValue(record.f23, record.f167, record.f11),
-    marketCap: numberValue(record.f20, record.f116),
-    floatMarketCap: numberValue(record.f21, record.f117),
+    change: numberValue(batch ? record.f4 : record.f169),
+    changePercent: numberValue(batch ? record.f3 : record.f170),
+    open: numberValue(batch ? record.f17 : record.f46),
+    high: numberValue(batch ? record.f15 : record.f44),
+    low: numberValue(batch ? record.f16 : record.f45),
+    prevClose: numberValue(batch ? record.f18 : record.f60),
+    volume: numberValue(batch ? record.f5 : record.f47),
+    amount: numberValue(batch ? record.f6 : record.f48),
+    turnoverRate: numberValue(batch ? record.f8 : record.f168),
+    pe: numberValue(batch ? record.f9 : record.f162),
+    pb: numberValue(batch ? record.f23 : record.f167),
+    marketCap: numberValue(batch ? record.f20 : record.f116),
+    floatMarketCap: numberValue(batch ? record.f21 : record.f117),
     updatedAt: Date.now(),
     status: price === null ? "empty" : "fresh"
   };
@@ -526,7 +529,7 @@ export async function getQuotes(stocks: Stock[], force = false): Promise<Quote[]
     }
 
     for (const stock of missing) {
-      const quote = quoteFromRecord(stock, recordsBySecid.get(stock.id) ?? {});
+      const quote = quoteFromRecord(stock, recordsBySecid.get(stock.id) ?? {}, "batch");
       quoteCache.set(stock.id, { quote, cachedAt: now });
       result.set(stock.id, quote);
     }
@@ -538,7 +541,7 @@ export async function getQuotes(stocks: Stock[], force = false): Promise<Quote[]
 export async function getDetail(stock: Stock): Promise<Quote> {
   const payload = await fetchJson<EastmoneyResponse>(detailUrl(stock.id));
   const record = asRecord(payload.data);
-  const quote = quoteFromRecord(stock, record);
+  const quote = quoteFromRecord(stock, record, "detail");
   quoteCache.set(stock.id, { quote, cachedAt: Date.now() });
   return quote;
 }
