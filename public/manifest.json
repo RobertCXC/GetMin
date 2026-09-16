@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "股票行情",
+  "version": "0.1.0",
+  "description": "快速查看沪深京 A 股自选行情。",
+  "action": {
+    "default_title": "股票行情",
+    "default_popup": "popup/index.html"
+  },
+  "options_page": "options/index.html",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["storage"],
+  "host_permissions": ["https://*.eastmoney.com/*"]
+}
