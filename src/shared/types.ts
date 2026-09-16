@@ -15,6 +15,7 @@ export type StockGroup = {
   name: string;
   stockIds: string[];
   order: number;
+  hidden?: boolean;
 };
 
 export type AppSettings = {

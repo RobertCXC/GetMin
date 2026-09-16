@@ -86,6 +86,7 @@ export default function App() {
   const [addStockError, setAddStockError] = useState("");
   const [draggedStockId, setDraggedStockId] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  const [metricMode, setMetricMode] = useState<"amount_turnover" | "high_low">("amount_turnover");
   const searchRequestId = useRef(0);
   const quoteRequestId = useRef(0);
   const detailRequestId = useRef(0);
@@ -297,7 +298,7 @@ export default function App() {
     const defaultGroupId =
       state.selectedGroupId !== ALL_GROUP_ID && state.groups.some((group) => group.id === state.selectedGroupId)
         ? state.selectedGroupId
-        : state.groups[0]?.id;
+        : (state.groups.find((group) => !group.hidden)?.id ?? state.groups[0]?.id);
     setAddStock(stock);
     setAddStockGroupIds(memberships.length > 0 ? memberships : defaultGroupId ? [defaultGroupId] : []);
     setAddStockError("");
@@ -373,7 +374,8 @@ export default function App() {
       id: createId("group"),
       name: trimmedName,
       stockIds: [],
-      order: state.groups.length
+      order: state.groups.length,
+      hidden: false
     };
     updateState((currentState) => ({
       ...currentState,
@@ -415,6 +417,35 @@ export default function App() {
         .map((item, index) => ({ ...item, order: index })),
       selectedGroupId: currentState.selectedGroupId === groupId ? ALL_GROUP_ID : currentState.selectedGroupId
     }));
+  };
+
+  const toggleGroupVisibility = (groupId: string) => {
+    if (!state) {
+      return;
+    }
+    const group = state.groups.find((item) => item.id === groupId);
+    if (!group) {
+      return;
+    }
+    const isHiding = !group.hidden;
+    if (isHiding) {
+      const visibleCount = state.groups.filter((item) => !item.hidden).length;
+      if (visibleCount <= 1) {
+        setStorageError("至少保留一个可见分组");
+        return;
+      }
+    }
+    setStorageError("");
+    updateState((currentState) => {
+      const groups = currentState.groups.map((item) =>
+        item.id === groupId ? { ...item, hidden: !item.hidden } : item
+      );
+      const selectedGroupId =
+        currentState.selectedGroupId === groupId && isHiding
+          ? ALL_GROUP_ID
+          : currentState.selectedGroupId;
+      return { ...currentState, groups, selectedGroupId };
+    });
   };
 
   const moveGroup = (fromGroupId: string, toGroupId: string) => {
@@ -564,11 +595,13 @@ export default function App() {
           <button className={`group-tab ${state.selectedGroupId === ALL_GROUP_ID ? "active" : ""}`} type="button" role="tab" aria-selected={state.selectedGroupId === ALL_GROUP_ID} onClick={() => selectGroup(ALL_GROUP_ID)}>
             <span>全部自选</span><span className="tab-count">{visibleStocks.length}</span>
           </button>
-          {state.groups.map((group) => (
-            <button className={`group-tab ${state.selectedGroupId === group.id ? "active" : ""}`} type="button" role="tab" aria-selected={state.selectedGroupId === group.id} key={group.id} onClick={() => selectGroup(group.id)}>
-              <span>{group.name}</span><span className="tab-count">{group.stockIds.length}</span>
-            </button>
-          ))}
+          {state.groups
+            .filter((group) => !group.hidden)
+            .map((group) => (
+              <button className={`group-tab ${state.selectedGroupId === group.id ? "active" : ""}`} type="button" role="tab" aria-selected={state.selectedGroupId === group.id} key={group.id} onClick={() => selectGroup(group.id)}>
+                <span>{group.name}</span><span className="tab-count">{group.stockIds.length}</span>
+              </button>
+            ))}
           <button className="add-group-button" type="button" title="创建分组" onClick={() => setShowAddGroup(true)}>＋</button>
         </div>
         <button className="text-button manage-groups" type="button" onClick={() => setShowGroupManager(true)}>管理</button>
@@ -576,10 +609,20 @@ export default function App() {
 
       <section className="market-status-bar">
         <span>{currentGroupLabel} · {currentMembershipCount} 只</span>
-        <span className="market-status-detail">
-          {quoteLoading ? <span className="status-dot loading" /> : <span className={`status-dot ${apiError ? "error" : "ok"}`} />}
-          {lastUpdated ? `更新于 ${formatDateTime(lastUpdated)}` : "等待行情更新"}
-        </span>
+        <div className="market-status-right">
+          <button
+            className="metric-switch-button"
+            type="button"
+            title="点击切换展示指标（额/换 ⇄ 高/低）"
+            onClick={() => setMetricMode((mode) => (mode === "amount_turnover" ? "high_low" : "amount_turnover"))}
+          >
+            指标: {metricMode === "amount_turnover" ? "额 / 换" : "高 / 低"} ⇄
+          </button>
+          <span className="market-status-detail">
+            {quoteLoading ? <span className="status-dot loading" /> : <span className={`status-dot ${apiError ? "error" : "ok"}`} />}
+            {lastUpdated ? `更新于 ${formatDateTime(lastUpdated)}` : "等待行情更新"}
+          </span>
+        </div>
       </section>
 
       {apiError && (
@@ -605,9 +648,11 @@ export default function App() {
               stock={stock}
               quote={quotes[stock.id] ?? emptyQuote(stock)}
               draggable={canDragStocks}
+              metricMode={metricMode}
               onOpen={() => openDetail(stock)}
               onManageGroups={() => openAddStockDialog(stock)}
               onRemove={() => removeStock(stock)}
+              onToggleMetric={() => setMetricMode((mode) => (mode === "amount_turnover" ? "high_low" : "amount_turnover"))}
               onDragStart={() => setDraggedStockId(stock.id)}
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => {
@@ -638,6 +683,7 @@ export default function App() {
           onClose={() => setShowGroupManager(false)}
           onRename={renameGroup}
           onDelete={deleteGroup}
+          onToggleVisibility={toggleGroupVisibility}
           onMove={moveGroup}
           onAdd={() => {
             setShowGroupManager(false);
@@ -697,9 +743,11 @@ function StockRow({
   stock,
   quote,
   draggable,
+  metricMode,
   onOpen,
   onManageGroups,
   onRemove,
+  onToggleMetric,
   onDragStart,
   onDragOver,
   onDrop,
@@ -708,25 +756,114 @@ function StockRow({
   stock: Stock;
   quote: Quote;
   draggable: boolean;
+  metricMode: "amount_turnover" | "high_low";
   onOpen: () => void;
   onManageGroups: () => void;
   onRemove: () => void;
+  onToggleMetric: () => void;
   onDragStart: () => void;
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
 }) {
   const tone = getTone(quote.changePercent);
+  const statusLabel = quoteStatusLabel(quote.status);
+  const showStatusTag = quote.status !== "fresh" && quote.status !== "empty";
+
+  const amountStr = formatCompactAmount(quote.amount);
+  const turnoverStr =
+    quote.turnoverRate !== null && quote.turnoverRate !== undefined && Number.isFinite(quote.turnoverRate)
+      ? `${quote.turnoverRate.toFixed(2)}%`
+      : "--";
+  const highStr = formatPrice(quote.high);
+  const lowStr = formatPrice(quote.low);
+
+  const tooltip = `${stock.name} (${stock.code}.${stock.market})\n最新价: ${formatPrice(quote.price)} (${formatPercent(quote.changePercent)})\n成交额: ${amountStr} | 换手率: ${turnoverStr}\n最高: ${highStr} | 最低: ${lowStr}\n今开: ${formatPrice(quote.open)} | 昨收: ${formatPrice(quote.prevClose)}`;
+
   return (
-    <div className={`stock-row ${tone}`} draggable={draggable} onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}>
+    <div
+      className={`stock-row ${tone}`}
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+      title={tooltip}
+    >
       <button className="stock-row-main" type="button" onClick={onOpen}>
-        <span className="stock-identity"><strong>{stock.name}</strong><small>{stock.code} · {stock.market}</small></span>
-        <span className="stock-quote"><strong>{formatPrice(quote.price)}</strong><span className="quote-change"><span>{formatSignedNumber(quote.change)}</span><span>{formatPercent(quote.changePercent)}</span></span></span>
+        <span className="stock-identity">
+          <span className="stock-name-line">
+            <strong className="stock-name">{stock.name}</strong>
+            {showStatusTag && <span className={`status-badge ${quote.status}`}>{statusLabel}</span>}
+          </span>
+          <small className="stock-code">{stock.code} · {stock.market}</small>
+        </span>
+
+        <span
+          className="stock-metrics"
+          title="点击切换指标（额/换 ⇄ 高/低）"
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleMetric();
+          }}
+        >
+          {metricMode === "amount_turnover" ? (
+            <>
+              <span className="stock-metric-item" title={`成交额: ${amountStr}`}>
+                <span className="metric-label">额</span>
+                <span className="metric-val">{amountStr}</span>
+              </span>
+              <span className="stock-metric-item" title={`换手率: ${turnoverStr}`}>
+                <span className="metric-label">换</span>
+                <span className="metric-val">{turnoverStr}</span>
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="stock-metric-item" title={`最高价: ${highStr}`}>
+                <span className="metric-label">高</span>
+                <span className="metric-val">{highStr}</span>
+              </span>
+              <span className="stock-metric-item" title={`最低价: ${lowStr}`}>
+                <span className="metric-label">低</span>
+                <span className="metric-val">{lowStr}</span>
+              </span>
+            </>
+          )}
+        </span>
+
+        <span className="stock-quote">
+          <strong className="stock-price">{formatPrice(quote.price)}</strong>
+          <span className="quote-change">
+            <span>{formatPercent(quote.changePercent)}</span>
+            <span>{formatSignedNumber(quote.change)}</span>
+          </span>
+        </span>
       </button>
-      <span className={`quote-status ${quote.status}`}>{quoteStatusLabel(quote.status)}</span>
+
       <div className="row-actions">
-        <button className="row-action" type="button" title="管理分组" onClick={(event) => { event.stopPropagation(); onManageGroups(); }}>分组</button>
-        <button className="row-action danger" type="button" title="从当前分组移除" onClick={(event) => { event.stopPropagation(); onRemove(); }}>移除</button>
+        <button
+          className="row-action"
+          type="button"
+          title="管理分组"
+          onClick={(event) => {
+            event.stopPropagation();
+            onManageGroups();
+          }}
+        >
+          分组
+        </button>
+        <button
+          className="row-action danger"
+          type="button"
+          title="从当前分组移除"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove();
+          }}
+        >
+          移除
+        </button>
       </div>
     </div>
   );
@@ -779,11 +916,62 @@ function AddGroupDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: 
   );
 }
 
+function GripIcon() {
+  return (
+    <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
+      <circle cx="2" cy="2" r="1.3" />
+      <circle cx="8" cy="2" r="1.3" />
+      <circle cx="2" cy="7" r="1.3" />
+      <circle cx="8" cy="7" r="1.3" />
+      <circle cx="2" cy="12" r="1.3" />
+      <circle cx="8" cy="12" r="1.3" />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+      <line x1="1" y1="1" x2="23" y2="23" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <line x1="10" y1="11" x2="10" y2="17" />
+      <line x1="14" y1="11" x2="14" y2="17" />
+    </svg>
+  );
+}
+
 function GroupManagerDialog({
   groups,
   onClose,
   onRename,
   onDelete,
+  onToggleVisibility,
   onMove,
   onAdd
 }: {
@@ -791,6 +979,7 @@ function GroupManagerDialog({
   onClose: () => void;
   onRename: (groupId: string, name: string) => boolean;
   onDelete: (groupId: string) => void;
+  onToggleVisibility: (groupId: string) => void;
   onMove: (fromGroupId: string, toGroupId: string) => void;
   onAdd: () => void;
 }) {
@@ -798,27 +987,126 @@ function GroupManagerDialog({
   const [draggedGroupId, setDraggedGroupId] = useState<string | null>(null);
   return (
     <Dialog title="管理分组" onClose={onClose} footer={<><button className="secondary-button" type="button" onClick={onClose}>完成</button><button className="primary-button" type="button" onClick={onAdd}>＋ 新建分组</button></>}>
-      <p className="dialog-help">删除分组只会删除分组关系，不会删除股票。</p>
+      <style>{`
+        .managed-group-icon-btn {
+          width: 28px;
+          height: 28px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          background: transparent;
+          border: none;
+          border-radius: 6px;
+          color: var(--text-muted, #64748b);
+          cursor: pointer;
+          transition: background 120ms ease, color 120ms ease, opacity 120ms ease;
+          padding: 0;
+          flex-shrink: 0;
+        }
+        .managed-group-icon-btn:hover {
+          background: color-mix(in srgb, var(--surface-muted, #f1f5f9) 90%, var(--text, #000) 10%);
+          color: var(--text, #1e293b);
+        }
+        .managed-group-icon-btn.is-active-save {
+          color: #10b981;
+        }
+        .managed-group-icon-btn.is-active-save:hover {
+          background: rgba(16, 185, 129, 0.12);
+          color: #059669;
+        }
+        .managed-group-icon-btn.is-danger {
+          color: var(--text-muted, #94a3b8);
+        }
+        .managed-group-icon-btn.is-danger:hover {
+          background: rgba(239, 68, 68, 0.1);
+          color: #ef4444;
+        }
+        .managed-group-icon-btn.is-hidden-eye {
+          opacity: 0.45;
+        }
+        .managed-group-icon-btn.is-hidden-eye:hover {
+          opacity: 0.9;
+          color: var(--accent, #2563eb);
+        }
+        .managed-group-actions {
+          display: flex;
+          align-items: center;
+          gap: 2px;
+          flex-shrink: 0;
+        }
+      `}</style>
+      <p className="dialog-help">点击眼睛图标可控制分组是否在主界面展示。删除分组只删除关系，不删除股票。</p>
       <div className="managed-groups">
-        {groups.map((group, index) => (
-          <div
-            className="managed-group"
-            key={group.id}
-            draggable
-            onDragStart={() => setDraggedGroupId(group.id)}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => { event.preventDefault(); if (draggedGroupId) onMove(draggedGroupId, group.id); setDraggedGroupId(null); }}
-            onDragEnd={() => setDraggedGroupId(null)}
-          >
-            <span className="drag-handle" title="拖动排序">⠿</span>
-            <div className="managed-group-fields">
-              <input className="text-input" value={drafts[group.id] ?? group.name} maxLength={20} onChange={(event) => setDrafts((current) => ({ ...current, [group.id]: event.target.value }))} />
-              <small>{group.stockIds.length} 只股票{index === 0 ? " · 默认分组" : ""}</small>
+        {groups.map((group) => {
+          const isHidden = Boolean(group.hidden);
+          const isModified = drafts[group.id] !== undefined && drafts[group.id].trim() !== group.name;
+          const handleSave = () => {
+            const currentVal = drafts[group.id] ?? group.name;
+            if (!onRename(group.id, currentVal)) {
+              setDrafts((current) => ({ ...current, [group.id]: group.name }));
+            }
+          };
+
+          return (
+            <div
+              className={`managed-group ${isHidden ? "is-hidden" : ""}`}
+              key={group.id}
+              draggable
+              onDragStart={() => setDraggedGroupId(group.id)}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => { event.preventDefault(); if (draggedGroupId) onMove(draggedGroupId, group.id); setDraggedGroupId(null); }}
+              onDragEnd={() => setDraggedGroupId(null)}
+              style={isHidden ? { opacity: 0.6 } : undefined}
+            >
+              <span className="drag-handle" title="拖动排序" style={{ display: "inline-flex", alignItems: "center", cursor: "grab", opacity: 0.6 }}>
+                <GripIcon />
+              </span>
+              <button
+                className={`managed-group-icon-btn ${isHidden ? "is-hidden-eye" : ""}`}
+                type="button"
+                title={isHidden ? "已隐藏，点击在主界面展示" : "展示中，点击隐藏该分组"}
+                aria-label={isHidden ? `展示${group.name}` : `隐藏${group.name}`}
+                onClick={() => onToggleVisibility(group.id)}
+              >
+                {isHidden ? <EyeOffIcon /> : <EyeIcon />}
+              </button>
+              <div className="managed-group-fields">
+                <input
+                  className="text-input"
+                  value={drafts[group.id] ?? group.name}
+                  maxLength={20}
+                  onChange={(event) => setDrafts((current) => ({ ...current, [group.id]: event.target.value }))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      handleSave();
+                    }
+                  }}
+                />
+              </div>
+              <div className="managed-group-actions">
+                <button
+                  className={`managed-group-icon-btn ${isModified ? "is-active-save" : ""}`}
+                  type="button"
+                  title={isModified ? "保存修改" : "保存"}
+                  aria-label="保存"
+                  onClick={handleSave}
+                >
+                  <CheckIcon />
+                </button>
+                <button
+                  className="managed-group-icon-btn is-danger"
+                  type="button"
+                  title="删除分组"
+                  aria-label="删除分组"
+                  onClick={() => onDelete(group.id)}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
             </div>
-            <button className="row-action" type="button" onClick={() => { if (!onRename(group.id, drafts[group.id] ?? group.name)) setDrafts((current) => ({ ...current, [group.id]: group.name })); }}>保存</button>
-            <button className="row-action danger" type="button" onClick={() => onDelete(group.id)}>删除</button>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Dialog>
   );
@@ -847,9 +1135,13 @@ function StockGroupDialog({
       <p className="dialog-help">同一只股票可以加入多个分组。</p>
       <div className="group-checkboxes">
         {groups.map((group) => (
-          <label className="checkbox-row" key={group.id}>
+          <label className="checkbox-row" key={group.id} style={group.hidden ? { opacity: 0.75 } : undefined}>
             <input type="checkbox" checked={selectedGroupIds.includes(group.id)} onChange={() => onToggle(group.id)} />
-            <span>{group.name}</span><small>{group.stockIds.length} 只</small>
+            <span>
+              {group.name}
+              {group.hidden && <span style={{ fontSize: "11px", color: "var(--text-muted, #9ca3af)", marginLeft: "4px" }}>(已隐藏)</span>}
+            </span>
+            <small>{group.stockIds.length} 只</small>
           </label>
         ))}
       </div>

@@ -15,7 +15,8 @@ function createDefaultGroup(): StockGroup {
     id: DEFAULT_GROUP_ID,
     name: DEFAULT_GROUP_NAME,
     stockIds: [],
-    order: 0
+    order: 0,
+    hidden: false
   };
 }
 
@@ -92,7 +93,8 @@ export function normalizeState(value: unknown): AppState {
       const rawStockIds = Array.isArray(rawGroup.stockIds) ? rawGroup.stockIds : [];
       const stockIds = rawStockIds.filter((stockId): stockId is string => typeof stockId === "string" && Boolean(stocks[stockId]));
       const order = typeof rawGroup.order === "number" ? rawGroup.order : index;
-      return { id, name, stockIds: [...new Set(stockIds)], order };
+      const hidden = Boolean(rawGroup.hidden);
+      return { id, name, stockIds: [...new Set(stockIds)], order, hidden };
     })
     .filter((group): group is StockGroup => group !== null)
     .sort((left, right) => left.order - right.order)
@@ -137,7 +139,8 @@ export function getStockIdsForGroup(state: AppState, groupId: string): string[] 
   if (groupId === ALL_GROUP_ID) {
     const result: string[] = [];
     const seen = new Set<string>();
-    for (const group of [...state.groups].sort((left, right) => left.order - right.order)) {
+    const visibleGroups = state.groups.filter((group) => !group.hidden);
+    for (const group of [...visibleGroups].sort((left, right) => left.order - right.order)) {
       for (const stockId of group.stockIds) {
         if (!seen.has(stockId) && state.stocks[stockId]) {
           seen.add(stockId);
