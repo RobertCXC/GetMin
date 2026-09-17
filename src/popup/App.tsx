@@ -515,13 +515,39 @@ export default function App() {
     if (!group || !window.confirm(`删除“${group.name}”分组？\n\n只删除分组关系，不会删除股票。`)) {
       return;
     }
-    updateState((currentState) => ({
-      ...currentState,
-      groups: currentState.groups
+    updateState((currentState) => {
+      const groups = currentState.groups
         .filter((item) => item.id !== groupId)
-        .map((item, index) => ({ ...item, order: index })),
-      selectedGroupId: currentState.selectedGroupId === groupId ? ALL_GROUP_ID : currentState.selectedGroupId
-    }));
+        .map((item, index) => ({ ...item, order: index }));
+      const selectedGroupId = currentState.selectedGroupId === groupId
+        ? currentState.allGroupHidden
+          ? groups.find((item) => !item.hidden)?.id ?? ALL_GROUP_ID
+          : ALL_GROUP_ID
+        : currentState.selectedGroupId;
+      return { ...currentState, groups, selectedGroupId };
+    });
+  };
+
+  const toggleAllGroupVisibility = () => {
+    if (!state) {
+      return;
+    }
+    const isHiding = !state.allGroupHidden;
+    if (isHiding && !state.groups.some((group) => !group.hidden)) {
+      setStorageError("至少保留一个可见分组");
+      return;
+    }
+    setStorageError("");
+    updateState((currentState) => {
+      const selectedGroupId = currentState.selectedGroupId === ALL_GROUP_ID && isHiding
+        ? currentState.groups.find((group) => !group.hidden)?.id ?? ALL_GROUP_ID
+        : currentState.selectedGroupId;
+      return {
+        ...currentState,
+        allGroupHidden: !currentState.allGroupHidden,
+        selectedGroupId
+      };
+    });
   };
 
   const toggleGroupVisibility = (groupId: string) => {
@@ -547,7 +573,9 @@ export default function App() {
       );
       const selectedGroupId =
         currentState.selectedGroupId === groupId && isHiding
-          ? ALL_GROUP_ID
+          ? currentState.allGroupHidden
+            ? currentState.groups.find((item) => item.id !== groupId && !item.hidden)?.id ?? ALL_GROUP_ID
+            : ALL_GROUP_ID
           : currentState.selectedGroupId;
       return { ...currentState, groups, selectedGroupId };
     });
@@ -662,6 +690,7 @@ export default function App() {
 
   const currentGroupLabel = selectedGroup?.name ?? "全部自选";
   const canDragStocks = state.selectedGroupId !== ALL_GROUP_ID;
+  const allStockCount = getStockIdsForGroup(state, ALL_GROUP_ID).length;
 
   return (
     <main className="page-shell popup-shell list-shell">
@@ -706,9 +735,11 @@ export default function App() {
 
       <section className="group-section" aria-label="股票分组">
         <div className="group-tabs" role="tablist">
-          <button className={`group-tab ${state.selectedGroupId === ALL_GROUP_ID ? "active" : ""}`} type="button" role="tab" aria-selected={state.selectedGroupId === ALL_GROUP_ID} onClick={() => selectGroup(ALL_GROUP_ID)}>
-            <span>全部自选</span><span className="tab-count">{visibleStocks.length}</span>
-          </button>
+          {!state.allGroupHidden && (
+            <button className={`group-tab ${state.selectedGroupId === ALL_GROUP_ID ? "active" : ""}`} type="button" role="tab" aria-selected={state.selectedGroupId === ALL_GROUP_ID} onClick={() => selectGroup(ALL_GROUP_ID)}>
+              <span>全部自选</span><span className="tab-count">{allStockCount}</span>
+            </button>
+          )}
           {state.groups
             .filter((group) => !group.hidden)
             .map((group) => (
@@ -776,9 +807,11 @@ export default function App() {
       {showGroupManager && (
         <GroupManagerDialog
           groups={state.groups}
+          allGroupHidden={state.allGroupHidden}
           onClose={() => setShowGroupManager(false)}
           onRename={renameGroup}
           onDelete={deleteGroup}
+          onToggleAllVisibility={toggleAllGroupVisibility}
           onToggleVisibility={toggleGroupVisibility}
           onMove={moveGroup}
           onAdd={() => {
@@ -1088,17 +1121,21 @@ function TrashIcon() {
 
 function GroupManagerDialog({
   groups,
+  allGroupHidden,
   onClose,
   onRename,
   onDelete,
+  onToggleAllVisibility,
   onToggleVisibility,
   onMove,
   onAdd
 }: {
   groups: StockGroup[];
+  allGroupHidden: boolean;
   onClose: () => void;
   onRename: (groupId: string, name: string) => boolean;
   onDelete: (groupId: string) => void;
+  onToggleAllVisibility: () => void;
   onToggleVisibility: (groupId: string) => void;
   onMove: (fromGroupId: string, toGroupId: string) => void;
   onAdd: () => void;
@@ -1155,8 +1192,24 @@ function GroupManagerDialog({
           flex-shrink: 0;
         }
       `}</style>
-      <p className="dialog-help">点击眼睛图标可控制分组是否在主界面展示。删除分组只删除关系，不删除股票。</p>
+      <p className="dialog-help">点击眼睛图标可控制分组是否在主界面展示。“全部自选”会自动汇总可见分组，删除自定义分组只删除关系，不删除股票。</p>
       <div className="managed-groups">
+        <div className={`managed-group managed-system-group ${allGroupHidden ? "is-hidden" : ""}`}>
+          <span className="drag-handle" aria-hidden="true">·</span>
+          <button
+            className={`managed-group-icon-btn ${allGroupHidden ? "is-hidden-eye" : ""}`}
+            type="button"
+            title={allGroupHidden ? "已隐藏，点击在主界面展示" : "展示中，点击隐藏该分组"}
+            aria-label={allGroupHidden ? "展示全部自选" : "隐藏全部自选"}
+            onClick={onToggleAllVisibility}
+          >
+            {allGroupHidden ? <EyeOffIcon /> : <EyeIcon />}
+          </button>
+          <div className="managed-group-fields">
+            <strong>全部自选</strong>
+            <small>自动汇总可见分组</small>
+          </div>
+        </div>
         {groups.map((group) => {
           const isHidden = Boolean(group.hidden);
           const isModified = drafts[group.id] !== undefined && drafts[group.id].trim() !== group.name;

@@ -38,6 +38,7 @@ export type AppState = {
   version: 1;
   stocks: Record<string, Stock>;
   groups: StockGroup[];
+  allGroupHidden: boolean;
   selectedGroupId: string;
   settings: AppSettings;
 };

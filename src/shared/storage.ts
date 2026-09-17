@@ -59,6 +59,7 @@ export function createDefaultState(): AppState {
     version: STATE_VERSION,
     stocks: {},
     groups: [createDefaultGroup()],
+    allGroupHidden: false,
     selectedGroupId: ALL_GROUP_ID,
     settings: {
       refreshInterval: 10,
@@ -149,6 +150,7 @@ export function normalizeState(value: unknown): AppState {
     version: STATE_VERSION,
     stocks,
     groups,
+    allGroupHidden: value.allGroupHidden === true,
     selectedGroupId,
     settings: normalizeSettings(value.settings)
   };
