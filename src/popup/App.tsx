@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent, FormEvent } from "react";
+import type { DragEvent, FormEvent, PointerEvent as ReactPointerEvent } from "react";
 import { getEastmoneyUrl } from "../shared/eastmoney";
 import {
   formatCompactAmount,
@@ -16,6 +16,9 @@ import {
   ALL_GROUP_ID,
   type AppState,
   type IntradayTrend,
+  type KlineData,
+  type KlinePeriod,
+  type KlinePoint,
   type Quote,
   type RowField,
   type RowLayout,
@@ -67,6 +70,16 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function chartKey(secid: string, period: KlinePeriod): string {
+  return `${secid}:${period}`;
+}
+
+const chartPeriods: Array<{ value: KlinePeriod; label: string; hint: string }> = [
+  { value: "intraday", label: "分时", hint: "今日走势" },
+  { value: "daily", label: "日 K", hint: "近 160 日" },
+  { value: "weekly", label: "周 K", hint: "近 160 周" }
+];
+
 type StateUpdater = (state: AppState) => AppState;
 
 export default function App() {
@@ -85,6 +98,10 @@ export default function App() {
   const [detailStock, setDetailStock] = useState<Stock | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [chartPeriod, setChartPeriod] = useState<KlinePeriod>("intraday");
+  const [chartData, setChartData] = useState<Record<string, KlineData>>({});
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState("");
   const [showGroupManager, setShowGroupManager] = useState(false);
   const [showAddGroup, setShowAddGroup] = useState(false);
   const [addStock, setAddStock] = useState<Stock | null>(null);
@@ -96,6 +113,7 @@ export default function App() {
   const quoteRequestId = useRef(0);
   const trendRequestId = useRef(0);
   const detailRequestId = useRef(0);
+  const chartRequestId = useRef(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -294,11 +312,52 @@ export default function App() {
     }
   }, [detailStock]);
 
+  const loadChart = useCallback(async (force = false) => {
+    if (!detailStock) {
+      return;
+    }
+
+    const requestId = chartRequestId.current + 1;
+    chartRequestId.current = requestId;
+    const key = chartKey(detailStock.id, chartPeriod);
+    setChartLoading(true);
+    setChartError("");
+    try {
+      const nextChart = await sendExtensionMessage<KlineData>({
+        type: "get_klines",
+        stock: detailStock,
+        period: chartPeriod,
+        force
+      });
+      if (requestId === chartRequestId.current) {
+        setChartData((currentCharts) => ({ ...currentCharts, [key]: nextChart }));
+      }
+    } catch (error: unknown) {
+      if (requestId === chartRequestId.current) {
+        setChartError(errorMessage(error, "走势图暂时不可用，请稍后重试"));
+      }
+    } finally {
+      if (requestId === chartRequestId.current) {
+        setChartLoading(false);
+      }
+    }
+  }, [chartPeriod, detailStock]);
+
+  const refreshDetail = useCallback(async () => {
+    await Promise.all([loadDetail(), loadChart(true)]);
+  }, [loadChart, loadDetail]);
+
   useEffect(() => {
     if (view === "detail" && detailStock) {
       void loadDetail();
     }
   }, [detailStock, loadDetail, view]);
+
+  useEffect(() => {
+    if (view === "detail" && detailStock) {
+      void loadChart();
+    }
+  }, [chartPeriod, detailStock, loadChart, view]);
 
   useEffect(() => {
     const keyword = searchTerm.trim();
@@ -541,6 +600,8 @@ export default function App() {
 
   const openDetail = (stock: Stock) => {
     setDetailStock(stock);
+    setChartPeriod("intraday");
+    setChartError("");
     setView("detail");
   };
 
@@ -566,14 +627,22 @@ export default function App() {
         <DetailView
           stock={detailStock}
           quote={quotes[detailStock.id] ?? emptyQuote(detailStock)}
-          loading={detailLoading}
+          loading={detailLoading || chartLoading}
           error={detailError}
+          chart={chartData[chartKey(detailStock.id, chartPeriod)]}
+          chartPeriod={chartPeriod}
+          chartLoading={chartLoading}
+          chartError={chartError}
           colorMode={state.settings.colorMode}
           onBack={() => {
             setView("list");
             setDetailStock(null);
           }}
-          onRefresh={loadDetail}
+          onRefresh={refreshDetail}
+          onPeriodChange={(period) => {
+            setChartPeriod(period);
+            setChartError("");
+          }}
           onOpenExternal={() => void chrome.tabs.create({ url: getEastmoneyUrl(detailStock) })}
           onManageGroups={() => openAddStockDialog(detailStock)}
           onRemove={() => removeStock(detailStock)}
@@ -847,7 +916,7 @@ function StockRow({
     return "minmax(62px, 0.8fr)";
   };
 
-  const tooltip = `${stock.name} (${stock.code}.${stock.market})\n最新价: ${formatPrice(quote.price)} (${formatPercent(quote.changePercent)})\n成交额: ${amountStr} | 换手率: ${turnoverStr}\n最高: ${highStr} | 最低: ${lowStr}\n今开: ${formatPrice(quote.open)} | 昨收: ${formatPrice(quote.prevClose)}`;
+  const tooltip = `${stock.name} (${stock.code}.${stock.market})\n最新价: ${formatPrice(quote.price)} (${formatPercent(quote.changePercent)})\n成交额: ${amountStr} | 换手率: ${turnoverStr}\n最高: ${highStr} | 最低: ${lowStr}\n今开: ${formatPrice(quote.open)} | 昨收: ${formatPrice(quote.prevClose)}\n总市值: ${formatCompactAmount(quote.marketCap)} | 流通市值: ${formatCompactAmount(quote.floatMarketCap)}`;
 
   return (
     <div
@@ -1222,9 +1291,14 @@ function DetailView({
   quote,
   loading,
   error,
+  chart,
+  chartPeriod,
+  chartLoading,
+  chartError,
   colorMode,
   onBack,
   onRefresh,
+  onPeriodChange,
   onOpenExternal,
   onManageGroups,
   onRemove
@@ -1233,27 +1307,35 @@ function DetailView({
   quote: Quote;
   loading: boolean;
   error: string;
+  chart?: KlineData;
+  chartPeriod: KlinePeriod;
+  chartLoading: boolean;
+  chartError: string;
   colorMode: AppState["settings"]["colorMode"];
   onBack: () => void;
   onRefresh: () => Promise<void>;
+  onPeriodChange: (period: KlinePeriod) => void;
   onOpenExternal: () => void;
   onManageGroups: () => void;
   onRemove: () => void;
 }) {
+  const [hoverPoint, setHoverPoint] = useState<KlinePoint | null>(null);
   const tone = getTone(quote.changePercent);
-  const metricRows: Array<[string, string]> = [
-    ["今开", formatPrice(quote.open)],
-    ["最高", formatPrice(quote.high)],
-    ["最低", formatPrice(quote.low)],
-    ["昨收", formatPrice(quote.prevClose)],
-    ["成交量", formatVolume(quote.volume)],
-    ["成交额", formatCompactAmount(quote.amount)],
-    ["换手率", formatPercent(quote.turnoverRate)],
-    ["市盈率", formatNumberWithUnit(quote.pe)],
-    ["市净率", formatNumberWithUnit(quote.pb)],
-    ["总市值", formatCompactAmount(quote.marketCap)],
-    ["流通市值", formatCompactAmount(quote.floatMarketCap)]
-  ];
+  const selectedPeriod = chartPeriods.find((period) => period.value === chartPeriod) ?? chartPeriods[0];
+  const latestPoint = chart?.points.at(-1);
+  const latestChartPrice = latestPoint?.close ?? null;
+  const chartReference = chart?.prevClose ?? null;
+  const summaryPoint = hoverPoint ?? latestPoint;
+  const summaryPrice = summaryPoint?.close ?? latestChartPrice ?? quote.price;
+  const summaryChange = summaryPrice !== null && chartReference !== null && chartReference !== 0
+    ? summaryPrice - chartReference
+    : null;
+  const summaryChangePercent = summaryPrice !== null && chartReference !== null && chartReference !== 0 && summaryChange !== null
+    ? (summaryChange / chartReference) * 100
+    : null;
+  useEffect(() => {
+    setHoverPoint(null);
+  }, [chart?.secid, chart?.updatedAt, chartPeriod]);
   return (
     <main className="page-shell popup-shell detail-shell">
       <header className="app-header detail-header">
@@ -1264,21 +1346,274 @@ function DetailView({
         <div className="detail-identity"><p className="eyebrow">{stock.market} · {stock.code}</p><h1>{stock.name}</h1></div>
         <div className={`detail-price ${tone}`}><strong>{formatPrice(quote.price)}</strong><span>{formatSignedNumber(quote.change)}　{formatPercent(quote.changePercent)}</span></div>
       </section>
-      <div className="detail-status"><span className={`quote-status ${quote.status}`}>{quoteStatusLabel(quote.status)}</span><span>行情更新时间：{formatDateTime(quote.updatedAt)}</span>{loading && <span className="inline-loading">刷新中…</span>}</div>
       {error && <div className="notice notice-warning"><span>{error}</span><button className="text-button" type="button" onClick={() => void onRefresh()}>重试</button></div>}
-      <section className="metrics-grid">
-        {metricRows.map(([label, value]) => <div className="metric-card" key={label}><span>{label}</span><strong>{value}</strong></div>)}
+
+      <section className="detail-chart-card" aria-label={`${stock.name}${selectedPeriod.label}走势图`}>
+        <div className="chart-card-heading">
+          <div className={`chart-hover-summary ${summaryPoint ? getTone(summaryChangePercent) : "is-empty"}`} aria-live="polite">
+            {summaryPoint ? (
+              <>
+              <div className="chart-hover-summary-heading">
+                <span>{hoverPoint ? formatChartTooltipTime(summaryPoint.timestamp, chartPeriod) : `最新 · ${formatChartTooltipTime(summaryPoint.timestamp, chartPeriod)}`}</span>
+                <strong>{formatPrice(summaryPrice)}</strong>
+              </div>
+              <div className="chart-hover-summary-grid">
+                {chartPeriod === "intraday" ? (
+                  <>
+                    <span>价格 <b>{formatPrice(summaryPrice)}</b></span>
+                    <span>昨收 <b>{formatPrice(chartReference)}</b></span>
+                  </>
+                ) : (
+                  <>
+                    <span>开 <b>{formatPrice(summaryPoint.open ?? summaryPrice)}</b></span>
+                    <span>高 <b>{formatPrice(summaryPoint.high ?? summaryPrice)}</b></span>
+                    <span>低 <b>{formatPrice(summaryPoint.low ?? summaryPrice)}</b></span>
+                    <span>收 <b>{formatPrice(summaryPrice)}</b></span>
+                  </>
+                )}
+                <span className="chart-hover-summary-change">涨跌 <b>{formatSignedNumber(summaryChange)}</b></span>
+                <span className="chart-hover-summary-change">幅度 <b>{formatPercent(summaryChangePercent)}</b></span>
+                <span>成交量 <b>{formatVolume(summaryPoint.volume)}</b></span>
+                <span>成交额 <b>{formatCompactAmount(summaryPoint.amount)}</b></span>
+              </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="chart-period-tabs" role="tablist" aria-label="走势图周期">
+          {chartPeriods.map((period) => (
+            <button
+              className={`chart-period-tab ${chartPeriod === period.value ? "active" : ""}`}
+              type="button"
+              role="tab"
+              aria-selected={chartPeriod === period.value}
+              key={period.value}
+              onClick={() => onPeriodChange(period.value)}
+            >
+              {period.label}
+            </button>
+          ))}
+        </div>
+
+        <div className={`chart-stage ${chartLoading ? "is-loading" : ""}`}>
+          {chart && chart.points.length > 0 ? (
+            <KlineChart data={chart} period={chartPeriod} onHoverPointChange={setHoverPoint} />
+          ) : chartLoading ? (
+            <div className="chart-placeholder"><span className="loading-spinner" /><span>正在加载{selectedPeriod.label}数据…</span></div>
+          ) : (
+            <div className="chart-placeholder"><span className="chart-placeholder-icon">⌁</span><span>暂无{selectedPeriod.label}数据</span></div>
+          )}
+          {chartLoading && chart && chart.points.length > 0 && <span className="chart-loading-badge">更新中…</span>}
+        </div>
+        {chartError && <div className="chart-error"><span>{chartError}</span><button className="text-button" type="button" onClick={() => void onRefresh()}>重试</button></div>}
+        <div className="chart-card-footer">
+          <span>{chart ? `已加载 ${chart.points.length} 个${chartPeriod === "intraday" ? "分时点" : chartPeriod === "daily" ? "交易日" : "交易周"}` : "切换周期查看历史走势"}</span>
+          <span>数据仅供参考</span>
+        </div>
       </section>
+
       <section className="detail-actions">
         <button className="secondary-button" type="button" onClick={onManageGroups}>加入其他分组</button>
         <button className="secondary-button" type="button" onClick={onOpenExternal}>东方财富网页</button>
         <button className="secondary-button danger-outline" type="button" onClick={onRemove}>从当前分组移除</button>
       </section>
-      {colorMode === "china" && <p className="detail-footnote">红涨绿跌 · 第一版暂不包含 K 线图</p>}
+      <p className="detail-footnote">{colorMode === "china" ? "红涨绿跌" : "绿涨红跌"} · 分时、日 K、周 K 支持按周期切换</p>
     </main>
   );
 }
 
-function formatNumberWithUnit(value: number | null | undefined): string {
-  return value === null || value === undefined || !Number.isFinite(value) ? "--" : value.toFixed(2);
+function KlineChart({ data, period, onHoverPointChange }: {
+  data: KlineData;
+  period: KlinePeriod;
+  onHoverPointChange?: (point: KlinePoint | null) => void;
+}) {
+  const [hoverPosition, setHoverPosition] = useState<{ index: number; y: number } | null>(null);
+  const width = 420;
+  const height = 260;
+  const plotLeft = 48;
+  const plotRight = 12;
+  const plotTop = 14;
+  const timeAxisHeight = 24;
+  const volumeHeight = 42;
+  const volumeGap = 10;
+  const volumeTop = height - timeAxisHeight - volumeHeight;
+  const pricePlotBottom = volumeTop - volumeGap;
+  const plotWidth = width - plotLeft - plotRight;
+  const plotHeight = pricePlotBottom - plotTop;
+  const drawablePoints = data.points.filter((point) => point.close !== null).slice(period === "intraday" ? 0 : -90);
+
+  useEffect(() => {
+    setHoverPosition(null);
+    onHoverPointChange?.(null);
+  }, [data.secid, onHoverPointChange, period]);
+
+  if (drawablePoints.length === 0) {
+    return <div className="chart-placeholder"><span className="chart-placeholder-icon">⌁</span><span>暂无可绘制数据</span></div>;
+  }
+
+  const reference = data.prevClose ?? drawablePoints[0].close ?? 0;
+  const values = drawablePoints.flatMap((point) => {
+    if (period === "intraday") {
+      return [point.close ?? 0];
+    }
+    return [point.low ?? point.close ?? 0, point.high ?? point.close ?? 0, point.open ?? point.close ?? 0, point.close ?? 0];
+  }).concat(reference > 0 ? [reference] : []);
+  const rawMin = Math.min(...values);
+  const rawMax = Math.max(...values);
+  const padding = Math.max((rawMax - rawMin) * 0.12, Math.max(Math.abs(rawMax), 1) * 0.003);
+  const minValue = rawMin - padding;
+  const maxValue = rawMax + padding;
+  const valueRange = Math.max(maxValue - minValue, 0.0001);
+  const yFor = (value: number) => plotTop + ((maxValue - value) / valueRange) * plotHeight;
+  const xForLine = (index: number) => plotLeft + (index / Math.max(1, drawablePoints.length - 1)) * plotWidth;
+  const xForPoint = (index: number) => plotLeft + ((index + 0.5) / drawablePoints.length) * plotWidth;
+  const xForData = (index: number) => period === "intraday" ? xForLine(index) : xForPoint(index);
+  const linePoints = drawablePoints.map((point, index) => `${xForLine(index).toFixed(2)},${yFor(point.close ?? reference).toFixed(2)}`);
+  const linePath = `M ${linePoints.join(" L ")}`;
+  const lastX = xForLine(drawablePoints.length - 1);
+  const areaPath = `${linePath} L ${lastX.toFixed(2)},${pricePlotBottom.toFixed(2)} L ${plotLeft},${pricePlotBottom.toFixed(2)} Z`;
+  const chartTone = getTone((drawablePoints.at(-1)?.close ?? reference) - reference);
+  const gradientId = `detail-chart-${data.secid.replace(/[^a-zA-Z0-9-]/g, "-")}-${period}`;
+  const gridValues = [maxValue, minValue + valueRange / 2, minValue];
+  const candleWidth = Math.max(2, Math.min(8, (plotWidth / drawablePoints.length) * 0.58));
+  const volumeMax = Math.max(...drawablePoints.map((point) => point.volume ?? 0), 0);
+  const volumeRange = Math.max(volumeMax, 1);
+  const volumeBottom = volumeTop + volumeHeight;
+  const volumeFor = (volume: number) => volumeBottom - (Math.min(Math.max(volume, 0), volumeRange) / volumeRange) * volumeHeight;
+  const volumeBarWidth = Math.max(1.5, Math.min(8, (plotWidth / drawablePoints.length) * 0.66));
+  const dateIndexes = drawablePoints.length === 1 ? [0] : [0, Math.floor((drawablePoints.length - 1) / 2), drawablePoints.length - 1];
+  const safeHoverIndex = hoverPosition === null ? null : Math.min(Math.max(hoverPosition.index, 0), drawablePoints.length - 1);
+  const hoverPoint = safeHoverIndex === null ? null : drawablePoints[safeHoverIndex];
+  const hoverX = safeHoverIndex === null ? null : xForData(safeHoverIndex);
+  const hoverY = hoverPosition?.y ?? null;
+  const hoverTone = hoverPoint ? getTone((hoverPoint.close ?? reference) - reference) : chartTone;
+  const crosshairPrice = hoverY === null
+    ? null
+    : maxValue - ((hoverY - plotTop) / plotHeight) * valueRange;
+  const crosshairPriceLabelHeight = 16;
+  const crosshairPriceLabelY = hoverY === null
+    ? 0
+    : Math.min(Math.max(hoverY - crosshairPriceLabelHeight / 2, plotTop), pricePlotBottom - crosshairPriceLabelHeight);
+  const handlePointerMove = (event: ReactPointerEvent<SVGSVGElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    if (bounds.width <= 0 || bounds.height <= 0) return;
+    const viewBoxX = ((event.clientX - bounds.left) / bounds.width) * width;
+    const viewBoxY = ((event.clientY - bounds.top) / bounds.height) * height;
+    const clampedX = Math.min(Math.max(viewBoxX, plotLeft), plotLeft + plotWidth);
+    const clampedY = Math.min(Math.max(viewBoxY, plotTop), pricePlotBottom);
+    const ratio = (clampedX - plotLeft) / plotWidth;
+    const nextIndex = Math.round(ratio * (drawablePoints.length - 1));
+    setHoverPosition({ index: nextIndex, y: clampedY });
+    onHoverPointChange?.(drawablePoints[nextIndex]);
+  };
+  const pointTone = (point: KlinePoint, index: number) => {
+    const close = point.close ?? 0;
+    const comparison = period === "intraday"
+      ? drawablePoints[index - 1]?.close ?? reference
+      : point.open ?? close;
+    return getTone(close - (comparison ?? close));
+  };
+
+  return (
+    <svg
+      className={`kline-chart ${period} ${chartTone}`}
+      viewBox={`0 0 ${width} ${height}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label={`${period === "intraday" ? "分时" : period === "daily" ? "日 K" : "周 K"}走势图`}
+      onPointerMove={handlePointerMove}
+      onPointerLeave={() => {
+        setHoverPosition(null);
+        onHoverPointChange?.(null);
+      }}
+    >
+      <title>{period === "intraday" ? "分时走势" : period === "daily" ? "日 K 走势" : "周 K 走势"}</title>
+      <defs>
+        <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="currentColor" stopOpacity="0.2" />
+          <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <g className="chart-grid">
+        {gridValues.map((value, index) => {
+          const y = yFor(value);
+          return <g key={index}><line x1={plotLeft} x2={plotLeft + plotWidth} y1={y} y2={y} /><text x={plotLeft - 7} y={y + 3} textAnchor="end">{formatPrice(value)}</text></g>;
+        })}
+      </g>
+      {reference >= minValue && reference <= maxValue && <g className="chart-reference"><line x1={plotLeft} x2={plotLeft + plotWidth} y1={yFor(reference)} y2={yFor(reference)} /><text x={plotLeft + 5} y={yFor(reference) - 5}>昨收 {formatPrice(reference)}</text></g>}
+      {period === "intraday" ? (
+        <g className="chart-line-group">
+          <path className="chart-area" d={areaPath} fill={`url(#${gradientId})`} />
+          <path className="chart-line" d={linePath} />
+          <circle className="chart-last-point" cx={lastX} cy={yFor(drawablePoints.at(-1)?.close ?? reference)} r="3" />
+        </g>
+      ) : (
+        <g className="chart-candles">
+          {drawablePoints.map((point, index) => {
+            const close = point.close ?? 0;
+            const open = point.open ?? close;
+            const high = point.high ?? Math.max(open, close);
+            const low = point.low ?? Math.min(open, close);
+            const candleTone = pointTone(point, index);
+            const x = xForPoint(index);
+            const bodyTop = Math.min(yFor(open), yFor(close));
+            const bodyHeight = Math.max(1.5, Math.abs(yFor(open) - yFor(close)));
+            return (
+              <g className={`chart-candle ${candleTone}`} key={point.timestamp}>
+                <line x1={x} x2={x} y1={yFor(high)} y2={yFor(low)} />
+                <rect x={x - candleWidth / 2} y={bodyTop} width={candleWidth} height={bodyHeight} />
+              </g>
+            );
+          })}
+        </g>
+      )}
+      <g className="chart-volume">
+        <line className="chart-volume-separator" x1={plotLeft} x2={plotLeft + plotWidth} y1={volumeTop - 5} y2={volumeTop - 5} />
+        <line className="chart-volume-guide" x1={plotLeft} x2={plotLeft + plotWidth} y1={volumeBottom} y2={volumeBottom} />
+        <text className="chart-volume-label" x={plotLeft + 5} y={volumeTop + 12}>成交量</text>
+        <text className="chart-volume-scale" x={plotLeft - 7} y={volumeTop + 12} textAnchor="end">{formatCompactAmount(volumeMax)}</text>
+        {drawablePoints.map((point, index) => {
+          const volume = Math.max(point.volume ?? 0, 0);
+          const x = xForData(index);
+          const y = volumeFor(volume);
+          return <rect className={`chart-volume-bar ${pointTone(point, index)} ${safeHoverIndex === index ? "active" : ""}`} key={point.timestamp} x={x - volumeBarWidth / 2} y={y} width={volumeBarWidth} height={Math.max(0, volumeBottom - y)} />;
+        })}
+      </g>
+      {hoverPoint && hoverX !== null && hoverY !== null && crosshairPrice !== null && (
+        <g className="chart-hover-layer">
+          <g className={`chart-crosshair ${hoverTone}`}>
+            <line x1={hoverX} x2={hoverX} y1={plotTop} y2={volumeBottom} />
+            <line x1={plotLeft} x2={plotLeft + plotWidth} y1={hoverY} y2={hoverY} />
+            <circle cx={hoverX} cy={hoverY} r="3.5" />
+          </g>
+          <g className="chart-crosshair-price-label" transform={`translate(${plotLeft - 46} ${crosshairPriceLabelY})`}>
+            <rect width="42" height={crosshairPriceLabelHeight} rx="3" />
+            <text x="21" y="11" textAnchor="middle">{formatPrice(crosshairPrice)}</text>
+          </g>
+        </g>
+      )}
+      <rect className="chart-interaction-layer" x={plotLeft} y={plotTop} width={plotWidth} height={volumeBottom - plotTop} aria-hidden="true" />
+      <g className="chart-time-axis">
+        {dateIndexes.map((index) => {
+          const point = drawablePoints[index];
+          return <text key={`${point.timestamp}-${index}`} x={xForData(index)} y={height - 9} textAnchor={index === 0 ? "start" : index === drawablePoints.length - 1 ? "end" : "middle"}>{formatChartTime(point.timestamp, period)}</text>;
+        })}
+      </g>
+    </svg>
+  );
+}
+
+function formatChartTime(timestamp: number, period: KlinePeriod): string {
+  const options: Intl.DateTimeFormatOptions = period === "intraday"
+    ? { hour: "2-digit", minute: "2-digit", hour12: false }
+    : { month: "2-digit", day: "2-digit" };
+  return new Intl.DateTimeFormat("zh-CN", { ...options, timeZone: "Asia/Shanghai" }).format(new Date(timestamp)).replaceAll("/", "-");
+}
+
+function formatChartTooltipTime(timestamp: number, period: KlinePeriod): string {
+  const options: Intl.DateTimeFormatOptions = period === "intraday"
+    ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }
+    : { year: "numeric", month: "2-digit", day: "2-digit" };
+  return new Intl.DateTimeFormat("zh-CN", { ...options, timeZone: "Asia/Shanghai" }).format(new Date(timestamp)).replaceAll("/", "-");
 }

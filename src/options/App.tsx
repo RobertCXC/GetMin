@@ -100,7 +100,7 @@ export default function App() {
       <section className="settings-card">
         <h2>数据说明</h2>
         <p className="options-note">股票基础信息、分组关系和设置使用 Chrome 本地存储，不需要登录。实时行情只保留在运行时缓存中，不会长期写入本地数据。</p>
-        <p className="options-note">第一版支持沪深京 A 股普通股票；暂不包含基金、ETF、港股、美股、交易和 K 线图。</p>
+        <p className="options-note">支持沪深京 A 股普通股票与分时、日 K、周 K 走势图；暂不包含基金、ETF、港股、美股和交易。</p>
       </section>
 
       <div className="options-actions">

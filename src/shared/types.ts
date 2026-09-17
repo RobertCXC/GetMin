@@ -71,12 +71,34 @@ export type IntradayTrend = {
   secid: string;
   prevClose: number | null;
   prices: number[];
+  points: KlinePoint[];
+};
+
+export type KlinePeriod = "intraday" | "daily" | "weekly";
+
+export type KlinePoint = {
+  timestamp: number;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  close: number | null;
+  volume: number | null;
+  amount: number | null;
+};
+
+export type KlineData = {
+  secid: string;
+  period: KlinePeriod;
+  prevClose: number | null;
+  points: KlinePoint[];
+  updatedAt: number | null;
 };
 
 export type ExtensionMessage =
   | { type: "search_stocks"; keyword: string }
   | { type: "get_quotes"; stocks: Stock[]; force?: boolean }
   | { type: "get_trends"; stocks: Stock[] }
+  | { type: "get_klines"; stock: Stock; period: KlinePeriod; force?: boolean }
   | { type: "get_detail"; stock: Stock };
 
 export type ExtensionResponse<T> =

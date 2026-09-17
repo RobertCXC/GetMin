@@ -1,5 +1,5 @@
 import { isTradingTime } from "./formatters";
-import type { IntradayTrend, Quote, Stock } from "./types";
+import type { IntradayTrend, KlineData, KlinePeriod, KlinePoint, Quote, Stock } from "./types";
 
 const PUSH2_BASE = "https://push2.eastmoney.com";
 const PUSH2HIS_BASE = "https://push2his.eastmoney.com";
@@ -7,6 +7,7 @@ const SEARCH_BASE = "https://searchapi.eastmoney.com";
 const REQUEST_TIMEOUT_MS = 8_000;
 const QUOTE_CACHE_TTL_MS = 8_000;
 const TREND_CACHE_TTL_MS = 30_000;
+const KLINE_CACHE_TTL_MS = 5 * 60_000;
 const SUGGEST_TOKEN = "120c5a36c6c9b8c2cc5c3e5d1f7f7f4b";
 
 type EastmoneyRecord = Record<string, unknown>;
@@ -25,6 +26,7 @@ type CachedQuote = {
 
 const quoteCache = new Map<string, CachedQuote>();
 const trendCache = new Map<string, { trend: IntradayTrend; cachedAt: number }>();
+const klineCache = new Map<string, { data: KlineData; cachedAt: number }>();
 
 function asRecord(value: unknown): EastmoneyRecord {
   return typeof value === "object" && value !== null ? (value as EastmoneyRecord) : {};
@@ -56,6 +58,59 @@ function numberValue(...values: unknown[]): number | null {
     }
   }
   return null;
+}
+
+function timestampValue(value: unknown): number | null {
+  const raw = textValue(value);
+  if (!raw) {
+    return null;
+  }
+
+  const fullDate = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (fullDate) {
+    const timestamp = new Date(
+      Number(fullDate[1]),
+      Number(fullDate[2]) - 1,
+      Number(fullDate[3]),
+      Number(fullDate[4] ?? 0),
+      Number(fullDate[5] ?? 0),
+      Number(fullDate[6] ?? 0)
+    ).getTime();
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  const timeOnly = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!timeOnly) {
+    return null;
+  }
+  const today = new Date();
+  const timestamp = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+    Number(timeOnly[1]),
+    Number(timeOnly[2]),
+    Number(timeOnly[3] ?? 0)
+  ).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function klinePointFromRow(row: string): KlinePoint | null {
+  const values = row.split(",");
+  const timestamp = timestampValue(values[0]);
+  const close = numberValue(values[2]);
+  if (timestamp === null || close === null) {
+    return null;
+  }
+  return {
+    timestamp,
+    open: numberValue(values[1]),
+    high: numberValue(values[3]),
+    low: numberValue(values[4]),
+    close,
+    volume: numberValue(values[5]),
+    amount: numberValue(values[6])
+  };
 }
 
 function normalizeSecid(value: unknown, marketValue: unknown, rawCodeValue: unknown): string | null {
@@ -321,18 +376,67 @@ function trendUrl(secid: string): string {
   return `${PUSH2HIS_BASE}/api/qt/stock/trends2/get?${params.toString()}`;
 }
 
+function klineUrl(secid: string, period: Exclude<KlinePeriod, "intraday">): string {
+  const params = new URLSearchParams({
+    fields1: "f1,f2,f3,f4,f5,f6",
+    fields2: "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62",
+    ut: "7eea3edcaed734bea9cbfc24409ed989",
+    klt: period === "weekly" ? "102" : "101",
+    fqt: "1",
+    beg: "0",
+    end: "20500000",
+    lmt: "160",
+    secid
+  });
+  return `${PUSH2HIS_BASE}/api/qt/stock/kline/get?${params.toString()}`;
+}
+
 async function fetchTrend(stock: Stock): Promise<IntradayTrend> {
   const payload = await fetchJson<EastmoneyResponse>(trendUrl(stock.id));
   const data = asRecord(payload.data);
   const rows = Array.isArray(data.trends) ? data.trends : [];
-  const prices = rows
+  const points = rows
     .filter((row): row is string => typeof row === "string")
-    .map((row) => Number(row.split(",")[1]))
-    .filter((price) => Number.isFinite(price) && price > 0);
+    .map((row): KlinePoint | null => {
+      const values = row.split(",");
+      const timestamp = timestampValue(values[0]);
+      const open = numberValue(values[1]);
+      const close = numberValue(values[2], values[1]);
+      if (timestamp === null || close === null || close <= 0) {
+        return null;
+      }
+      return {
+        timestamp,
+        open: open ?? close,
+        high: numberValue(values[3], close),
+        low: numberValue(values[4], close),
+        close,
+        volume: numberValue(values[5]),
+        amount: numberValue(values[6])
+      };
+    })
+    .filter((point): point is KlinePoint => point !== null);
   return {
     secid: stock.id,
-    prevClose: numberValue(data.preClose),
-    prices
+    prevClose: numberValue(data.prePrice, data.preClose, data.preclose),
+    prices: points.map((point) => point.close ?? 0).filter((price) => price > 0),
+    points
+  };
+}
+
+async function fetchKline(stock: Stock, period: Exclude<KlinePeriod, "intraday">): Promise<KlineData> {
+  const payload = await fetchJson<EastmoneyResponse>(klineUrl(stock.id, period));
+  const data = asRecord(payload.data);
+  const rows = Array.isArray(data.klines) ? data.klines : [];
+  return {
+    secid: stock.id,
+    period,
+    prevClose: numberValue(data.prePrice, data.preClose, data.preclose),
+    points: rows
+      .filter((row): row is string => typeof row === "string")
+      .map(klinePointFromRow)
+      .filter((point): point is KlinePoint => point !== null),
+    updatedAt: Date.now()
   };
 }
 
@@ -359,12 +463,40 @@ export async function getTrends(stocks: Stock[]): Promise<IntradayTrend[]> {
         result.set(stock.id, trend);
       } catch {
         const cached = trendCache.get(stock.id);
-        result.set(stock.id, cached?.trend ?? { secid: stock.id, prevClose: null, prices: [] });
+        result.set(stock.id, cached?.trend ?? { secid: stock.id, prevClose: null, prices: [], points: [] });
       }
     }
   }));
 
-  return uniqueStocks.map((stock) => result.get(stock.id) ?? { secid: stock.id, prevClose: null, prices: [] });
+  return uniqueStocks.map((stock) => result.get(stock.id) ?? { secid: stock.id, prevClose: null, prices: [], points: [] });
+}
+
+export async function getKlines(stock: Stock, period: KlinePeriod, force = false): Promise<KlineData> {
+  const cacheKey = `${stock.id}:${period}`;
+  const cached = klineCache.get(cacheKey);
+  const now = Date.now();
+  const cacheTtl = period === "intraday" ? TREND_CACHE_TTL_MS : KLINE_CACHE_TTL_MS;
+  if (!force && cached && now - cached.cachedAt <= cacheTtl) {
+    return cached.data;
+  }
+
+  let data: KlineData;
+  if (period === "intraday") {
+    const trend = await fetchTrend(stock);
+    trendCache.set(stock.id, { trend, cachedAt: now });
+    data = {
+      secid: stock.id,
+      period,
+      prevClose: trend.prevClose,
+      points: trend.points,
+      updatedAt: now
+    };
+  } else {
+    data = await fetchKline(stock, period);
+  }
+
+  klineCache.set(cacheKey, { data, cachedAt: now });
+  return data;
 }
 
 export async function getQuotes(stocks: Stock[], force = false): Promise<Quote[]> {
@@ -419,4 +551,5 @@ export function getEastmoneyUrl(stock: Stock): string {
 export function clearQuoteCache(): void {
   quoteCache.clear();
   trendCache.clear();
+  klineCache.clear();
 }
