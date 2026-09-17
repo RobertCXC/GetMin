@@ -47,41 +47,10 @@ export function formatVolume(value: number | null | undefined): string {
   return formatted === "--" ? formatted : `${formatted} 手`;
 }
 
-export function formatDateTime(timestamp: number | null | undefined): string {
-  if (!timestamp) {
-    return "--";
-  }
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false
-  }).format(new Date(timestamp));
-}
-
-export function isTradingTime(timestamp = Date.now()): boolean {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Shanghai",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23"
-  }).formatToParts(new Date(timestamp));
-  const weekday = parts.find((part) => part.type === "weekday")?.value;
-  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? -1);
-  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? -1);
-  const minutes = hour * 60 + minute;
-  const weekdayOpen = weekday !== "Sat" && weekday !== "Sun";
-  return weekdayOpen && ((minutes >= 555 && minutes <= 690) || (minutes >= 780 && minutes <= 905));
-}
-
 export function quoteStatusLabel(status: QuoteStatus): string {
   switch (status) {
     case "fresh":
       return "实时";
-    case "closed":
-      return "休市";
     case "stale":
       return "数据已过期";
     case "empty":

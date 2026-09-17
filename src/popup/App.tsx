@@ -3,7 +3,6 @@ import type { DragEvent, FormEvent, PointerEvent as ReactPointerEvent } from "re
 import { getEastmoneyUrl } from "../shared/eastmoney";
 import {
   formatCompactAmount,
-  formatDateTime,
   formatPercent,
   formatPrice,
   formatSignedNumber,
@@ -108,7 +107,6 @@ export default function App() {
   const [addStockGroupIds, setAddStockGroupIds] = useState<string[]>([]);
   const [addStockError, setAddStockError] = useState("");
   const [draggedStockId, setDraggedStockId] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const searchRequestId = useRef(0);
   const quoteRequestId = useRef(0);
   const trendRequestId = useRef(0);
@@ -215,8 +213,6 @@ export default function App() {
         }
         const nextQuoteMap = Object.fromEntries(nextQuotes.map((quote) => [quote.secid, quote]));
         setQuotes((currentQuotes) => ({ ...currentQuotes, ...nextQuoteMap }));
-        const timestamps = nextQuotes.map((quote) => quote.updatedAt ?? 0).filter(Boolean);
-        setLastUpdated(timestamps.length > 0 ? Math.max(...timestamps) : null);
         setApiError("");
       } catch (error: unknown) {
         if (requestId !== quoteRequestId.current) {
@@ -299,7 +295,6 @@ export default function App() {
       const detail = await sendExtensionMessage<Quote>({ type: "get_detail", stock: detailStock });
       if (requestId === detailRequestId.current) {
         setQuotes((currentQuotes) => ({ ...currentQuotes, [detail.secid]: detail }));
-        setLastUpdated(detail.updatedAt);
       }
     } catch (error: unknown) {
       if (requestId === detailRequestId.current) {
@@ -666,7 +661,6 @@ export default function App() {
   }
 
   const currentGroupLabel = selectedGroup?.name ?? "全部自选";
-  const currentMembershipCount = selectedGroup ? selectedGroup.stockIds.length : visibleStocks.length;
   const canDragStocks = state.selectedGroupId !== ALL_GROUP_ID;
 
   return (
@@ -725,16 +719,6 @@ export default function App() {
           <button className="add-group-button" type="button" title="创建分组" onClick={() => setShowAddGroup(true)}>＋</button>
         </div>
         <button className="text-button manage-groups" type="button" onClick={() => setShowGroupManager(true)}>管理</button>
-      </section>
-
-      <section className="market-status-bar">
-        <span>{currentGroupLabel} · {currentMembershipCount} 只</span>
-        <div className="market-status-right">
-          <span className="market-status-detail">
-            {quoteLoading ? <span className="status-dot loading" /> : <span className={`status-dot ${apiError ? "error" : "ok"}`} />}
-            {lastUpdated ? `更新于 ${formatDateTime(lastUpdated)}` : "等待行情更新"}
-          </span>
-        </div>
       </section>
 
       {apiError && (
@@ -880,7 +864,7 @@ function StockRow({
 }) {
   const tone = getTone(quote.changePercent);
   const statusLabel = quoteStatusLabel(quote.status);
-  const showStatusTag = quote.status !== "fresh" && quote.status !== "empty";
+  const showStatusTag = quote.status === "stale";
 
   const amountStr = formatCompactAmount(quote.amount);
   const turnoverStr =

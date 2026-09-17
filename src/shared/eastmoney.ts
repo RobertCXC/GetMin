@@ -1,4 +1,3 @@
-import { isTradingTime } from "./formatters";
 import type { IntradayTrend, KlineData, KlinePeriod, KlinePoint, Quote, Stock } from "./types";
 
 const PUSH2_BASE = "https://push2.eastmoney.com";
@@ -265,7 +264,7 @@ function quoteFromRecord(stock: Stock, record: EastmoneyRecord): Quote {
     marketCap: numberValue(record.f20, record.f116),
     floatMarketCap: numberValue(record.f21, record.f117),
     updatedAt: Date.now(),
-    status: price === null ? "empty" : isTradingTime() ? "fresh" : "closed"
+    status: price === null ? "empty" : "fresh"
   };
   return quote;
 }

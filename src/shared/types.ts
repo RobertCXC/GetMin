@@ -42,7 +42,7 @@ export type AppState = {
   settings: AppSettings;
 };
 
-export type QuoteStatus = "fresh" | "closed" | "stale" | "empty";
+export type QuoteStatus = "fresh" | "stale" | "empty";
 
 export type Quote = {
   secid: string;
