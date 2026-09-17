@@ -601,7 +601,7 @@ export default function App() {
   const canDragStocks = state.selectedGroupId !== ALL_GROUP_ID;
 
   return (
-    <main className="page-shell popup-shell">
+    <main className="page-shell popup-shell list-shell">
       <header className="app-header">
         <div className="brand-block">
           <span className="brand-mark" aria-hidden="true">↗</span>
