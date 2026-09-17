@@ -2,6 +2,15 @@ export const ALL_GROUP_ID = "all";
 
 export type Theme = "light" | "dark" | "system";
 export type ColorMode = "china" | "western";
+export type RowField =
+  | "name" | "code" | "trend"
+  | "changePercent" | "price" | "change"
+  | "amount" | "turnover" | "high" | "low"
+  | "open" | "prevClose" | "volume" | "marketCap" | "floatMarketCap" | "pe" | "pb";
+
+export type RowLayout = {
+  columns: RowField[][];
+};
 
 export type Stock = {
   id: string;
@@ -22,6 +31,7 @@ export type AppSettings = {
   refreshInterval: number;
   colorMode: ColorMode;
   theme: Theme;
+  rowLayout: RowLayout;
 };
 
 export type AppState = {
@@ -57,9 +67,16 @@ export type Quote = {
   status: QuoteStatus;
 };
 
+export type IntradayTrend = {
+  secid: string;
+  prevClose: number | null;
+  prices: number[];
+};
+
 export type ExtensionMessage =
   | { type: "search_stocks"; keyword: string }
   | { type: "get_quotes"; stocks: Stock[]; force?: boolean }
+  | { type: "get_trends"; stocks: Stock[] }
   | { type: "get_detail"; stock: Stock };
 
 export type ExtensionResponse<T> =

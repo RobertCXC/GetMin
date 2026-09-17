@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { loadAppState, saveAppState } from "../shared/storage";
 import type { AppSettings, AppState } from "../shared/types";
+import RowLayoutEditor from "./RowLayoutEditor";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : "设置读取失败";
@@ -39,7 +40,8 @@ export default function App() {
       return;
     }
     try {
-      await saveAppState({ ...state, settings: draft });
+      const latest = await loadAppState();
+      await saveAppState({ ...latest, settings: draft });
       setState((current) => current ? { ...current, settings: draft } : current);
       setSaved(true);
       setError("");
@@ -62,7 +64,7 @@ export default function App() {
       <header className="options-header">
         <p className="eyebrow">股票行情 · 设置</p>
         <h1>插件设置</h1>
-        <p>调整行情刷新方式和颜色显示。自选分组与股票关系会自动保存在当前浏览器中。</p>
+        <p>调整行情刷新方式、颜色和股票列表布局。自选分组与股票关系会自动保存在当前浏览器中。</p>
       </header>
 
       <section className="settings-card">
@@ -92,6 +94,8 @@ export default function App() {
           </select>
         </div>
       </section>
+
+      <RowLayoutEditor layout={draft.rowLayout} onChange={(layout) => updateDraft("rowLayout", layout)} />
 
       <section className="settings-card">
         <h2>数据说明</h2>

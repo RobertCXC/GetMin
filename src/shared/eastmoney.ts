@@ -1,10 +1,12 @@
 import { isTradingTime } from "./formatters";
-import type { Quote, Stock } from "./types";
+import type { IntradayTrend, Quote, Stock } from "./types";
 
 const PUSH2_BASE = "https://push2.eastmoney.com";
+const PUSH2HIS_BASE = "https://push2his.eastmoney.com";
 const SEARCH_BASE = "https://searchapi.eastmoney.com";
 const REQUEST_TIMEOUT_MS = 8_000;
 const QUOTE_CACHE_TTL_MS = 8_000;
+const TREND_CACHE_TTL_MS = 30_000;
 const SUGGEST_TOKEN = "120c5a36c6c9b8c2cc5c3e5d1f7f7f4b";
 
 type EastmoneyRecord = Record<string, unknown>;
@@ -22,6 +24,7 @@ type CachedQuote = {
 };
 
 const quoteCache = new Map<string, CachedQuote>();
+const trendCache = new Map<string, { trend: IntradayTrend; cachedAt: number }>();
 
 function asRecord(value: unknown): EastmoneyRecord {
   return typeof value === "object" && value !== null ? (value as EastmoneyRecord) : {};
@@ -305,6 +308,65 @@ function detailUrl(secid: string): string {
   return `${PUSH2_BASE}/api/qt/stock/get?${params.toString()}`;
 }
 
+function trendUrl(secid: string): string {
+  const params = new URLSearchParams({
+    fields1: "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+    fields2: "f51,f52,f53,f54,f55,f56,f57,f58",
+    ut: "7eea3edcaed734bea9cbfc24409ed989",
+    ndays: "1",
+    iscr: "0",
+    iscca: "0",
+    secid
+  });
+  return `${PUSH2HIS_BASE}/api/qt/stock/trends2/get?${params.toString()}`;
+}
+
+async function fetchTrend(stock: Stock): Promise<IntradayTrend> {
+  const payload = await fetchJson<EastmoneyResponse>(trendUrl(stock.id));
+  const data = asRecord(payload.data);
+  const rows = Array.isArray(data.trends) ? data.trends : [];
+  const prices = rows
+    .filter((row): row is string => typeof row === "string")
+    .map((row) => Number(row.split(",")[1]))
+    .filter((price) => Number.isFinite(price) && price > 0);
+  return {
+    secid: stock.id,
+    prevClose: numberValue(data.preClose),
+    prices
+  };
+}
+
+export async function getTrends(stocks: Stock[]): Promise<IntradayTrend[]> {
+  const uniqueStocks = dedupeStocks(stocks);
+  const result = new Map<string, IntradayTrend>();
+  const missing = uniqueStocks.filter((stock) => {
+    const cached = trendCache.get(stock.id);
+    if (cached && Date.now() - cached.cachedAt < TREND_CACHE_TTL_MS) {
+      result.set(stock.id, cached.trend);
+      return false;
+    }
+    return true;
+  });
+
+  // A group can contain 100 stocks; keep requests bounded and isolate individual failures.
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(4, missing.length) }, async () => {
+    while (nextIndex < missing.length) {
+      const stock = missing[nextIndex++];
+      try {
+        const trend = await fetchTrend(stock);
+        trendCache.set(stock.id, { trend, cachedAt: Date.now() });
+        result.set(stock.id, trend);
+      } catch {
+        const cached = trendCache.get(stock.id);
+        result.set(stock.id, cached?.trend ?? { secid: stock.id, prevClose: null, prices: [] });
+      }
+    }
+  }));
+
+  return uniqueStocks.map((stock) => result.get(stock.id) ?? { secid: stock.id, prevClose: null, prices: [] });
+}
+
 export async function getQuotes(stocks: Stock[], force = false): Promise<Quote[]> {
   const uniqueStocks = dedupeStocks(stocks);
   const now = Date.now();
@@ -356,4 +418,5 @@ export function getEastmoneyUrl(stock: Stock): string {
 
 export function clearQuoteCache(): void {
   quoteCache.clear();
+  trendCache.clear();
 }

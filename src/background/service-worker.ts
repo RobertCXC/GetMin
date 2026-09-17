@@ -1,4 +1,4 @@
-import { getDetail, getQuotes, searchStocks } from "../shared/eastmoney";
+import { getDetail, getQuotes, getTrends, searchStocks } from "../shared/eastmoney";
 import type { ExtensionMessage, ExtensionResponse } from "../shared/types";
 
 async function handleMessage(message: ExtensionMessage): Promise<ExtensionResponse<unknown>> {
@@ -7,6 +7,8 @@ async function handleMessage(message: ExtensionMessage): Promise<ExtensionRespon
       return { ok: true, data: await searchStocks(message.keyword) };
     case "get_quotes":
       return { ok: true, data: await getQuotes(message.stocks, message.force ?? false) };
+    case "get_trends":
+      return { ok: true, data: await getTrends(message.stocks) };
     case "get_detail":
       return { ok: true, data: await getDetail(message.stock) };
     default:

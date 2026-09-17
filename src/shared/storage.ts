@@ -1,10 +1,44 @@
-import { ALL_GROUP_ID, type AppSettings, type AppState, type Stock, type StockGroup } from "./types";
+import { DEFAULT_ROW_LAYOUT, ROW_FIELDS } from "./row-layout";
+import { ALL_GROUP_ID, type AppSettings, type AppState, type RowField, type RowLayout, type Stock, type StockGroup } from "./types";
 
 export const STORAGE_KEY = "stock-market-app-state";
 export const STATE_VERSION = 1 as const;
 
 const DEFAULT_GROUP_ID = "group-default";
 const DEFAULT_GROUP_NAME = "我的自选";
+export function normalizeRowLayout(value: unknown): RowLayout {
+  const raw = isRecord(value) ? value : {};
+  let source: unknown[];
+  if (Array.isArray(raw.columns)) {
+    source = raw.columns;
+  } else if (Array.isArray(raw.blockOrder)) {
+    // Keep layouts saved by the earlier list-based settings editor.
+    const blocks: Record<string, RowField[]> = {
+      identity: ["name", "code"], trend: ["trend"], metrics: ["amount", "turnover"],
+      quote: (Array.isArray(raw.quoteOrder) ? raw.quoteOrder : ["changePercent", "price", "change"])
+        .filter((field): field is RowField => ROW_FIELDS.includes(field as RowField))
+        .filter((field) => !Array.isArray(raw.hiddenQuoteFields) || !raw.hiddenQuoteFields.includes(field))
+    };
+    source = raw.blockOrder
+      .filter((block): block is string => typeof block === "string" && Object.hasOwn(blocks, block))
+      .filter((block) => !Array.isArray(raw.hiddenBlocks) || !raw.hiddenBlocks.includes(block))
+      .map((block) => blocks[block]);
+  } else {
+    source = DEFAULT_ROW_LAYOUT.columns;
+  }
+
+  const seen = new Set<RowField>();
+  const columns = Array.from({ length: 4 }, (_, index) => {
+    const column = Array.isArray(source[index]) ? source[index] : [];
+    return column.filter((field): field is RowField => {
+      if (!ROW_FIELDS.includes(field as RowField) || seen.has(field as RowField)) return false;
+      seen.add(field as RowField);
+      return true;
+    });
+  });
+  if (seen.size === 0) columns[0].push("name");
+  return { columns };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -29,7 +63,8 @@ export function createDefaultState(): AppState {
     settings: {
       refreshInterval: 10,
       colorMode: "china",
-      theme: "system"
+      theme: "system",
+      rowLayout: normalizeRowLayout(null)
     }
   };
 }
@@ -64,7 +99,8 @@ function normalizeSettings(value: unknown): AppSettings {
   return {
     refreshInterval: Math.min(60, Math.max(5, Math.round(interval))),
     colorMode,
-    theme
+    theme,
+    rowLayout: normalizeRowLayout(value.rowLayout)
   };
 }
 

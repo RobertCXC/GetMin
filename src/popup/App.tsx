@@ -15,14 +15,19 @@ import { sendExtensionMessage } from "../shared/messages";
 import {
   ALL_GROUP_ID,
   type AppState,
+  type IntradayTrend,
   type Quote,
+  type RowField,
+  type RowLayout,
   type Stock,
   type StockGroup
 } from "../shared/types";
 import {
+  STORAGE_KEY,
   getStockIdsForGroup,
   getStockMemberships,
   loadAppState,
+  normalizeState,
   saveAppState
 } from "../shared/storage";
 
@@ -69,6 +74,7 @@ export default function App() {
   const [loadError, setLoadError] = useState("");
   const [storageError, setStorageError] = useState("");
   const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const [trends, setTrends] = useState<Record<string, IntradayTrend>>({});
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [apiError, setApiError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
@@ -86,9 +92,9 @@ export default function App() {
   const [addStockError, setAddStockError] = useState("");
   const [draggedStockId, setDraggedStockId] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
-  const [metricMode, setMetricMode] = useState<"amount_turnover" | "high_low">("amount_turnover");
   const searchRequestId = useRef(0);
   const quoteRequestId = useRef(0);
+  const trendRequestId = useRef(0);
   const detailRequestId = useRef(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -108,6 +114,19 @@ export default function App() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof chrome === "undefined" || !chrome.storage?.onChanged) return;
+    const onStorageChanged = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (areaName !== "local" || !changes[STORAGE_KEY]?.newValue) return;
+      const settings = normalizeState(changes[STORAGE_KEY].newValue).settings;
+      setState((current) => current && JSON.stringify(current.settings) !== JSON.stringify(settings)
+        ? { ...current, settings }
+        : current);
+    };
+    chrome.storage.onChanged.addListener(onStorageChanged);
+    return () => chrome.storage.onChanged.removeListener(onStorageChanged);
   }, []);
 
   useEffect(() => {
@@ -216,6 +235,38 @@ export default function App() {
     }, state.settings.refreshInterval * 1_000);
     return () => window.clearInterval(timer);
   }, [refreshQuotes, state, view]);
+
+  useEffect(() => {
+    if (!state || view === "detail" || visibleStocks.length === 0 || !state.settings.rowLayout.columns.some((column) => column.includes("trend"))) {
+      return;
+    }
+    const requestId = ++trendRequestId.current;
+    let busy = false;
+    const refreshTrends = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        for (let index = 0; index < visibleStocks.length; index += 8) {
+          const nextTrends = await sendExtensionMessage<IntradayTrend[]>({
+            type: "get_trends",
+            stocks: visibleStocks.slice(index, index + 8)
+          });
+          if (requestId !== trendRequestId.current) return;
+          setTrends((current) => ({ ...current, ...Object.fromEntries(nextTrends.map((trend) => [trend.secid, trend])) }));
+        }
+      } catch {
+        // A missing preview must not interrupt quote updates or the stock list.
+      } finally {
+        busy = false;
+      }
+    };
+    void refreshTrends();
+    const timer = window.setInterval(() => void refreshTrends(), 30_000);
+    return () => {
+      trendRequestId.current += 1;
+      window.clearInterval(timer);
+    };
+  }, [state?.selectedGroupId, state?.settings.rowLayout.columns, view, visibleStocks]);
 
   const loadDetail = useCallback(async () => {
     if (!detailStock) {
@@ -610,14 +661,6 @@ export default function App() {
       <section className="market-status-bar">
         <span>{currentGroupLabel} · {currentMembershipCount} 只</span>
         <div className="market-status-right">
-          <button
-            className="metric-switch-button"
-            type="button"
-            title="点击切换展示指标（额/换 ⇄ 高/低）"
-            onClick={() => setMetricMode((mode) => (mode === "amount_turnover" ? "high_low" : "amount_turnover"))}
-          >
-            指标: {metricMode === "amount_turnover" ? "额 / 换" : "高 / 低"} ⇄
-          </button>
           <span className="market-status-detail">
             {quoteLoading ? <span className="status-dot loading" /> : <span className={`status-dot ${apiError ? "error" : "ok"}`} />}
             {lastUpdated ? `更新于 ${formatDateTime(lastUpdated)}` : "等待行情更新"}
@@ -647,12 +690,12 @@ export default function App() {
               key={stock.id}
               stock={stock}
               quote={quotes[stock.id] ?? emptyQuote(stock)}
+              trend={trends[stock.id]}
+              layout={state.settings.rowLayout}
               draggable={canDragStocks}
-              metricMode={metricMode}
               onOpen={() => openDetail(stock)}
               onManageGroups={() => openAddStockDialog(stock)}
               onRemove={() => removeStock(stock)}
-              onToggleMetric={() => setMetricMode((mode) => (mode === "amount_turnover" ? "high_low" : "amount_turnover"))}
               onDragStart={() => setDraggedStockId(stock.id)}
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => {
@@ -742,12 +785,12 @@ function SearchResults({
 function StockRow({
   stock,
   quote,
+  trend,
+  layout,
   draggable,
-  metricMode,
   onOpen,
   onManageGroups,
   onRemove,
-  onToggleMetric,
   onDragStart,
   onDragOver,
   onDrop,
@@ -755,12 +798,12 @@ function StockRow({
 }: {
   stock: Stock;
   quote: Quote;
+  trend?: IntradayTrend;
+  layout: RowLayout;
   draggable: boolean;
-  metricMode: "amount_turnover" | "high_low";
   onOpen: () => void;
   onManageGroups: () => void;
   onRemove: () => void;
-  onToggleMetric: () => void;
   onDragStart: () => void;
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
@@ -777,6 +820,32 @@ function StockRow({
       : "--";
   const highStr = formatPrice(quote.high);
   const lowStr = formatPrice(quote.low);
+  const columns = layout.columns.filter((column) => column.length > 0);
+  const fieldValues: Record<RowField, string> = {
+    name: stock.name,
+    code: `${stock.code} · ${stock.market}`,
+    trend: "",
+    changePercent: formatPercent(quote.changePercent),
+    price: formatPrice(quote.price),
+    change: formatSignedNumber(quote.change),
+    amount: `额 ${amountStr}`,
+    turnover: `换 ${turnoverStr}`,
+    high: `高 ${highStr}`,
+    low: `低 ${lowStr}`,
+    open: `开 ${formatPrice(quote.open)}`,
+    prevClose: `昨 ${formatPrice(quote.prevClose)}`,
+    volume: `量 ${formatVolume(quote.volume)}`,
+    marketCap: `市值 ${formatCompactAmount(quote.marketCap)}`,
+    floatMarketCap: `流值 ${formatCompactAmount(quote.floatMarketCap)}`,
+    pe: `PE ${formatPrice(quote.pe)}`,
+    pb: `PB ${formatPrice(quote.pb)}`
+  };
+  const columnWidth = (column: RowField[]) => {
+    if (column.length === 1 && column[0] === "trend") return "96px";
+    if (column.includes("name")) return "minmax(76px, 1fr)";
+    if (column.some((field) => field === "changePercent" || field === "price")) return "minmax(80px, 0.9fr)";
+    return "minmax(62px, 0.8fr)";
+  };
 
   const tooltip = `${stock.name} (${stock.code}.${stock.market})\n最新价: ${formatPrice(quote.price)} (${formatPercent(quote.changePercent)})\n成交额: ${amountStr} | 换手率: ${turnoverStr}\n最高: ${highStr} | 最低: ${lowStr}\n今开: ${formatPrice(quote.open)} | 昨收: ${formatPrice(quote.prevClose)}`;
 
@@ -790,55 +859,18 @@ function StockRow({
       onDragEnd={onDragEnd}
       title={tooltip}
     >
-      <button className="stock-row-main" type="button" onClick={onOpen}>
-        <span className="stock-identity">
-          <span className="stock-name-line">
-            <strong className="stock-name">{stock.name}</strong>
-            {showStatusTag && <span className={`status-badge ${quote.status}`}>{statusLabel}</span>}
+      <button className="stock-row-main" type="button" onClick={onOpen}
+        style={{ gridTemplateColumns: columns.map(columnWidth).join(" ") }}>
+        {columns.map((column, columnIndex) => (
+          <span className="stock-layout-column" key={columnIndex}>
+            {column.map((field, fieldIndex) => field === "trend"
+              ? <MiniTrend key={field} stock={stock} trend={trend} tone={tone} />
+              : <span key={field} className={`stock-layout-field field-${field} ${fieldIndex === 0 ? "first-field" : ""}`}>
+                  {field === "name" ? <span className="stock-name-line"><strong className="stock-name">{stock.name}</strong>{showStatusTag && <span className={`status-badge ${quote.status}`}>{statusLabel}</span>}</span>
+                    : fieldValues[field]}
+                </span>)}
           </span>
-          <small className="stock-code">{stock.code} · {stock.market}</small>
-        </span>
-
-        <span
-          className="stock-metrics"
-          title="点击切换指标（额/换 ⇄ 高/低）"
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleMetric();
-          }}
-        >
-          {metricMode === "amount_turnover" ? (
-            <>
-              <span className="stock-metric-item" title={`成交额: ${amountStr}`}>
-                <span className="metric-label">额</span>
-                <span className="metric-val">{amountStr}</span>
-              </span>
-              <span className="stock-metric-item" title={`换手率: ${turnoverStr}`}>
-                <span className="metric-label">换</span>
-                <span className="metric-val">{turnoverStr}</span>
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="stock-metric-item" title={`最高价: ${highStr}`}>
-                <span className="metric-label">高</span>
-                <span className="metric-val">{highStr}</span>
-              </span>
-              <span className="stock-metric-item" title={`最低价: ${lowStr}`}>
-                <span className="metric-label">低</span>
-                <span className="metric-val">{lowStr}</span>
-              </span>
-            </>
-          )}
-        </span>
-
-        <span className="stock-quote">
-          <strong className="stock-price">{formatPrice(quote.price)}</strong>
-          <span className="quote-change">
-            <span>{formatPercent(quote.changePercent)}</span>
-            <span>{formatSignedNumber(quote.change)}</span>
-          </span>
-        </span>
+        ))}
       </button>
 
       <div className="row-actions">
@@ -866,6 +898,41 @@ function StockRow({
         </button>
       </div>
     </div>
+  );
+}
+
+function MiniTrend({ stock, trend, tone }: { stock: Stock; trend?: IntradayTrend; tone: string }) {
+  const prices = trend?.prices ?? [];
+  const prevClose = trend?.prevClose;
+  const reference = prevClose && prevClose > 0 ? prevClose : prices[0];
+  if (!reference || prices.length === 0) {
+    return <span className="mini-trend empty" aria-label={`${stock.name}暂无分时数据`} />;
+  }
+
+  const maxDeviation = Math.max(reference * 0.005, ...prices.map((price) => Math.abs(price - reference)));
+  const points = prices.map((price, index) => {
+    const x = (index / Math.max(240, prices.length - 1)) * 96;
+    const y = 17 - ((price - reference) / maxDeviation) * 14;
+    return `${x.toFixed(2)},${y.toFixed(2)}`;
+  });
+  const line = `M ${points.join(" L ")}`;
+  const area = `${line} L ${((prices.length - 1) / Math.max(240, prices.length - 1) * 96).toFixed(2)},34 L 0,34 Z`;
+  const gradientId = `mini-trend-${stock.id.replace(/[^a-zA-Z0-9-]/g, "-")}`;
+
+  return (
+    <span className={`mini-trend ${tone}`} role="img" aria-label={`${stock.name}当日分时缩略图`}>
+      <svg viewBox="0 0 96 34" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id={gradientId} x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0%" stopColor="currentColor" stopOpacity="0.22" />
+            <stop offset="100%" stopColor="currentColor" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path className="mini-trend-baseline" d="M 0,17 H 96" />
+        <path d={area} fill={`url(#${gradientId})`} />
+        <path d={line} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+    </span>
   );
 }
 
