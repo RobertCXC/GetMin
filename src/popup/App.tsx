@@ -439,10 +439,6 @@ export default function App() {
       return;
     }
     const removeFromAll = state.selectedGroupId === ALL_GROUP_ID;
-    const scopeLabel = removeFromAll ? "全部分组" : selectedGroup?.name ?? "当前分组";
-    if (!window.confirm(`确定从${scopeLabel}移除“${stock.name}”吗？`)) {
-      return;
-    }
 
     updateState((currentState) => {
       const groups = currentState.groups.map((group) => {
