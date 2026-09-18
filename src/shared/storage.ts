@@ -79,12 +79,13 @@ function normalizeStock(value: unknown, fallbackId: string): Stock | null {
   const code = typeof value.code === "string" ? value.code.trim() : "";
   const name = typeof value.name === "string" ? value.name.trim() : "";
   const market = typeof value.market === "string" ? value.market.trim() : "";
+  const kind = value.kind === "etf" ? "etf" : "stock";
 
   if (!id || !code || !name || !market) {
     return null;
   }
 
-  return { id, code, name, market };
+  return { id, code, name, market, kind };
 }
 
 function normalizeSettings(value: unknown): AppSettings {

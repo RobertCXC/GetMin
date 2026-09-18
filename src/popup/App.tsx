@@ -40,6 +40,10 @@ function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function stockMarketLabel(stock: Stock): string {
+  return stock.kind === "etf" ? `${stock.market} · ETF` : stock.market;
+}
+
 function emptyQuote(stock: Stock, status: Quote["status"] = "empty"): Quote {
   return {
     secid: stock.id,
@@ -716,8 +720,8 @@ export default function App() {
           ref={searchInputRef}
           value={searchTerm}
           onChange={(event) => setSearchTerm(event.target.value)}
-          placeholder="搜索股票代码或名称"
-          aria-label="搜索股票代码或名称"
+          placeholder="搜索股票、ETF、港股或韩国股票"
+          aria-label="搜索股票、ETF、港股或韩国股票"
         />
         {searchTerm && <button className="clear-search" type="button" onClick={() => setSearchTerm("")} aria-label="清空搜索">×</button>}
       </div>
@@ -857,10 +861,10 @@ function SearchResults({
     <section className="search-results" aria-label="股票搜索结果">
       <div className="search-results-header"><span>搜索“{keyword}”</span>{loading && <span className="inline-loading">查询中…</span>}</div>
       {error && <p className="search-empty">{error}</p>}
-      {!loading && !error && results.length === 0 && <p className="search-empty">没有找到沪深京 A 股</p>}
+      {!loading && !error && results.length === 0 && <p className="search-empty">没有找到支持的证券</p>}
       {results.map((stock) => (
         <button className="search-result" type="button" key={stock.id} onClick={() => onSelect(stock)}>
-          <span className="search-result-main"><strong>{stock.name}</strong><small>{stock.code} · {stock.market}</small></span>
+          <span className="search-result-main"><strong>{stock.name}</strong><small>{stock.code} · {stockMarketLabel(stock)}</small></span>
           <span className={`search-result-state ${isAdded(stock.id) ? "added" : ""}`}>{isAdded(stock.id) ? "已添加" : "加入"}</span>
         </button>
       ))}
@@ -909,7 +913,7 @@ function StockRow({
   const columns = layout.columns.filter((column) => column.length > 0);
   const fieldValues: Record<RowField, string> = {
     name: stock.name,
-    code: `${stock.code} · ${stock.market}`,
+    code: `${stock.code} · ${stockMarketLabel(stock)}`,
     trend: "",
     changePercent: formatPercent(quote.changePercent),
     price: formatPrice(quote.price),
@@ -933,7 +937,7 @@ function StockRow({
     return "minmax(62px, 0.8fr)";
   };
 
-  const tooltip = `${stock.name} (${stock.code}.${stock.market})\n最新价: ${formatPrice(quote.price)} (${formatPercent(quote.changePercent)})\n成交额: ${amountStr} | 换手率: ${turnoverStr}\n最高: ${highStr} | 最低: ${lowStr}\n今开: ${formatPrice(quote.open)} | 昨收: ${formatPrice(quote.prevClose)}\n总市值: ${formatCompactAmount(quote.marketCap)} | 流通市值: ${formatCompactAmount(quote.floatMarketCap)}`;
+  const tooltip = `${stock.name} (${stock.code} · ${stockMarketLabel(stock)})\n最新价: ${formatPrice(quote.price)} (${formatPercent(quote.changePercent)})\n成交额: ${amountStr} | 换手率: ${turnoverStr}\n最高: ${highStr} | 最低: ${lowStr}\n今开: ${formatPrice(quote.open)} | 昨收: ${formatPrice(quote.prevClose)}\n总市值: ${formatCompactAmount(quote.marketCap)} | 流通市值: ${formatCompactAmount(quote.floatMarketCap)}`;
 
   return (
     <div
@@ -1304,7 +1308,7 @@ function StockGroupDialog({
 }) {
   return (
     <Dialog title="选择分组" onClose={onClose} footer={<><button className="secondary-button" type="button" onClick={onClose}>取消</button><button className="primary-button" type="button" onClick={onSave}>保存</button></>}>
-      <div className="selected-stock-summary"><strong>{stock.name}</strong><span>{stock.code} · {stock.market}</span></div>
+      <div className="selected-stock-summary"><strong>{stock.name}</strong><span>{stock.code} · {stockMarketLabel(stock)}</span></div>
       <p className="dialog-help">同一只股票可以加入多个分组。</p>
       <div className="group-checkboxes">
         {groups.map((group) => (
@@ -1380,7 +1384,7 @@ function DetailView({
         <div className="header-actions"><button className={`icon-button ${loading ? "is-loading" : ""}`} type="button" title="刷新详情" onClick={() => void onRefresh()} disabled={loading}>↻</button></div>
       </header>
       <section className="detail-hero">
-        <div className="detail-identity"><p className="eyebrow">{stock.market} · {stock.code}</p><h1>{stock.name}</h1></div>
+        <div className="detail-identity"><p className="eyebrow">{stockMarketLabel(stock)} · {stock.code}</p><h1>{stock.name}</h1></div>
         <div className={`detail-price ${tone}`}><strong>{formatPrice(quote.price)}</strong><span>{formatSignedNumber(quote.change)}　{formatPercent(quote.changePercent)}</span></div>
       </section>
       {error && <div className="notice notice-warning"><span>{error}</span><button className="text-button" type="button" onClick={() => void onRefresh()}>重试</button></div>}

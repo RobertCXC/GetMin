@@ -12,11 +12,14 @@ export type RowLayout = {
   columns: RowField[][];
 };
 
+export type StockKind = "stock" | "etf";
+
 export type Stock = {
   id: string;
   code: string;
   name: string;
-  market: "SH" | "SZ" | "BJ" | string;
+  market: "SH" | "SZ" | "BJ" | "HK" | "KR" | string;
+  kind: StockKind;
 };
 
 export type StockGroup = {

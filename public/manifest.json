@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "股票行情",
   "version": "0.1.0",
-  "description": "快速查看沪深京 A 股自选行情。",
+  "description": "快速查看 A 股、ETF、港股和韩国股票自选行情。",
   "action": {
     "default_title": "股票行情",
     "default_popup": "popup/index.html"

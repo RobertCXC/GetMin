@@ -1,4 +1,4 @@
-import type { IntradayTrend, KlineData, KlinePeriod, KlinePoint, Quote, Stock } from "./types";
+import type { IntradayTrend, KlineData, KlinePeriod, KlinePoint, Quote, Stock, StockKind } from "./types";
 
 const PUSH2_BASE = "https://push2.eastmoney.com";
 const PUSH2HIS_BASE = "https://push2his.eastmoney.com";
@@ -7,7 +7,8 @@ const REQUEST_TIMEOUT_MS = 8_000;
 const QUOTE_CACHE_TTL_MS = 8_000;
 const TREND_CACHE_TTL_MS = 30_000;
 const KLINE_CACHE_TTL_MS = 5 * 60_000;
-const SUGGEST_TOKEN = "120c5a36c6c9b8c2cc5c3e5d1f7f7f4b";
+const SEARCH_LIST_CACHE_TTL_MS = 10 * 60_000;
+const SUGGEST_TOKEN = "D43BF722C8E33BDC906FB84D85E326E8";
 
 type EastmoneyRecord = Record<string, unknown>;
 type EastmoneyResponse = {
@@ -23,9 +24,22 @@ type CachedQuote = {
   cachedAt: number;
 };
 
+type SearchListConfig = {
+  key: string;
+  fs: string;
+  kind: StockKind;
+  filter?: (record: EastmoneyRecord) => boolean;
+};
+
+type CachedStockList = {
+  stocks: Stock[];
+  cachedAt: number;
+};
+
 const quoteCache = new Map<string, CachedQuote>();
 const trendCache = new Map<string, { trend: IntradayTrend; cachedAt: number }>();
 const klineCache = new Map<string, { data: KlineData; cachedAt: number }>();
+const searchListCache = new Map<string, CachedStockList>();
 
 function asRecord(value: unknown): EastmoneyRecord {
   return typeof value === "object" && value !== null ? (value as EastmoneyRecord) : {};
@@ -38,12 +52,58 @@ function textValue(value: unknown): string | null {
   return String(value).trim() || null;
 }
 
-function codeValue(value: unknown): string | null {
-  const raw = textValue(value);
-  if (!raw || !/^\d+$/.test(raw) || raw.length > 6) {
+function rawCodeValue(value: unknown): string | null {
+  return textValue(value);
+}
+
+function normalizeMarketId(value: unknown): string | null {
+  const raw = textValue(value)?.toUpperCase();
+  if (!raw) {
+    return null;
+  }
+
+  switch (raw) {
+    case "SH":
+    case "SSE":
+    case "1":
+      return "1";
+    case "SZ":
+    case "SZSE":
+    case "BJ":
+    case "BSE":
+    case "0":
+      return "0";
+    case "HK":
+    case "HKS":
+    case "HKEX":
+    case "116":
+      return "116";
+    case "KR":
+    case "KOREA":
+    case "KOSPI":
+    case "KOSDAQ":
+    case "177":
+      return "177";
+    default:
+      return null;
+  }
+}
+
+function normalizeCodeForMarket(value: unknown, market: string | null): string | null {
+  const raw = rawCodeValue(value);
+  if (!raw) {
+    return null;
+  }
+  if (!/^\d+$/.test(raw)) {
     return raw;
   }
-  return raw.padStart(6, "0");
+
+  const expectedLength = market === "116" ? 5 : 6;
+  return raw.length <= expectedLength ? raw.padStart(expectedLength, "0") : raw;
+}
+
+function validCodeForMarket(code: string, market: string): boolean {
+  return market === "116" ? /^\d{5}$/.test(code) : /^\d{6}$/.test(code);
 }
 
 function numberValue(...values: unknown[]): number | null {
@@ -116,57 +176,75 @@ function normalizeSecid(value: unknown, marketValue: unknown, rawCodeValue: unkn
   const raw = textValue(value);
   if (raw) {
     const [rawMarket, rawCode] = raw.split(".");
-    const normalizedRawCode = codeValue(rawCode);
-    if (rawMarket && normalizedRawCode && /^(0|1)$/.test(rawMarket) && /^\d{6}$/.test(normalizedRawCode)) {
-      return `${rawMarket}.${normalizedRawCode}`;
+    const market = normalizeMarketId(rawMarket);
+    const normalizedRawCode = normalizeCodeForMarket(rawCode, market);
+    if (market && normalizedRawCode && validCodeForMarket(normalizedRawCode, market)) {
+      return `${market}.${normalizedRawCode}`;
     }
   }
 
-  const code = codeValue(rawCodeValue);
-  if (!code || !/^\d{6}$/.test(code)) {
+  const market = normalizeMarketId(marketValue);
+  const code = normalizeCodeForMarket(rawCodeValue, market);
+  if (!market || !code || !validCodeForMarket(code, market)) {
     return null;
   }
-
-  const market = textValue(marketValue)?.toUpperCase();
-  if (market === "SH" || market === "SSE" || market === "1") {
-    return `1.${code}`;
-  }
-  if (market === "SZ" || market === "SZSE" || market === "BJ" || market === "BSE" || market === "0") {
-    return `0.${code}`;
-  }
-  return null;
+  return `${market}.${code}`;
 }
 
 function marketFromSecid(secid: string, code: string): string {
+  if (secid.startsWith("116.")) {
+    return "HK";
+  }
+  if (secid.startsWith("177.")) {
+    return "KR";
+  }
   if (/^(4|8|92)/.test(code)) {
     return "BJ";
   }
   return secid.startsWith("1.") ? "SH" : "SZ";
 }
 
-function isOrdinaryAStock(record: EastmoneyRecord): boolean {
-  const code = codeValue(record.f12 ?? record.Code);
-  if (!code || !/^\d{6}$/.test(code)) {
-    return false;
-  }
-
-  const classification = [record.Classify, record.SecurityTypeName, record.TypeName]
+function classificationText(record: EastmoneyRecord): string {
+  return [
+    record.Classify,
+    record.SecurityTypeName,
+    record.SecurityType,
+    record.TypeName,
+    record.f14,
+    record.Name
+  ]
     .map(textValue)
-    .filter(Boolean)
+    .filter((value): value is string => Boolean(value))
     .join(" ");
-  if (/基金|ETF|债|指数|港|美|期货|期权|可转|权证/i.test(classification)) {
-    return false;
-  }
-
-  const secid = normalizeSecid(record.QuoteID ?? record.secid ?? record.SecID, record.MktNum ?? record.f13 ?? record.Market, code);
-  return Boolean(secid);
 }
 
-function stockFromRecord(record: EastmoneyRecord): Stock | null {
-  const code = codeValue(record.f12 ?? record.Code);
-  const name = textValue(record.f14 ?? record.Name);
-  const secid = normalizeSecid(record.QuoteID ?? record.secid ?? record.SecID, record.MktNum ?? record.f13 ?? record.Market, code);
-  if (!code || !name || !secid || !/^\d{6}$/.test(code)) {
+function isEtfRecord(record: EastmoneyRecord): boolean {
+  return /ETF/i.test(classificationText(record));
+}
+
+function isExcludedSecurity(record: EastmoneyRecord): boolean {
+  return /基金|债券?|指数|期货|期权|可转|权证|窝轮|牛熊|REIT/i.test(classificationText(record)) && !isEtfRecord(record);
+}
+
+function isOrdinaryAStock(record: EastmoneyRecord): boolean {
+  const stock = stockFromRecord(record, "stock");
+  if (!stock || !["SH", "SZ", "BJ"].includes(stock.market) || isEtfRecord(record) || isExcludedSecurity(record)) {
+    return false;
+  }
+  return true;
+}
+
+function stockFromRecord(record: EastmoneyRecord, kindOverride?: StockKind): Stock | null {
+  const rawCode = record.f12 ?? record.f57 ?? record.Code;
+  const name = textValue(record.f14 ?? record.f58 ?? record.Name);
+  const secid = normalizeSecid(record.QuoteID ?? record.secid ?? record.SecID, record.MktNum ?? record.f13 ?? record.Market, rawCode);
+  const code = secid?.split(".")[1] ?? normalizeCodeForMarket(rawCode, null);
+  if (!code || !name || !secid || !validCodeForMarket(code, secid.split(".")[0])) {
+    return null;
+  }
+
+  const kind = kindOverride ?? (isEtfRecord(record) ? "etf" : isExcludedSecurity(record) ? null : "stock");
+  if (!kind) {
     return null;
   }
 
@@ -174,7 +252,8 @@ function stockFromRecord(record: EastmoneyRecord): Stock | null {
     id: secid,
     code,
     name,
-    market: marketFromSecid(secid, code)
+    market: marketFromSecid(secid, code),
+    kind
   };
 }
 
@@ -203,7 +282,17 @@ async function fetchJson<T>(url: string): Promise<T> {
       if (!response.ok) {
         throw new Error(`行情接口返回 HTTP ${response.status}`);
       }
-      return (await response.json()) as T;
+      const body = (await response.text()).trim();
+      try {
+        return JSON.parse(body) as T;
+      } catch {
+        // The suggestion endpoint can return JSONP in some browser regions.
+        const jsonp = body.match(/^[^(]+\(([\s\S]*)\)\s*;?$/);
+        if (!jsonp) {
+          throw new Error("行情接口返回格式无法识别");
+        }
+        return JSON.parse(jsonp[1]) as T;
+      }
     } catch (error) {
       lastError = error;
       if (attempt === 0) {
@@ -282,7 +371,7 @@ function searchUrl(keyword: string): string {
   return `${SEARCH_BASE}/api/suggest/get?${params.toString()}`;
 }
 
-function listUrl(): string {
+function listUrl(fs: string): string {
   const params = new URLSearchParams({
     pn: "1",
     pz: "10000",
@@ -291,11 +380,35 @@ function listUrl(): string {
     fltt: "2",
     invt: "2",
     fid: "f3",
-    fs: "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81",
+    fs,
     fields: "f12,f13,f14,f100"
   });
   return `${PUSH2_BASE}/api/qt/clist/get?${params.toString()}`;
 }
+
+const searchListConfigs: readonly SearchListConfig[] = [
+  {
+    key: "a-stock",
+    fs: "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81",
+    kind: "stock",
+    filter: isOrdinaryAStock
+  },
+  {
+    key: "etf",
+    fs: "b:MK0021,b:MK0022,b:MK0023,b:MK0024,b:MK0827",
+    kind: "etf"
+  },
+  {
+    key: "hk-stock",
+    fs: "m:116+t:3,m:116+t:4",
+    kind: "stock"
+  },
+  {
+    key: "kr-stock",
+    fs: "m:177",
+    kind: "stock"
+  }
+];
 
 function parseSuggestionResponse(response: unknown): Stock[] {
   const root = asRecord(response);
@@ -303,8 +416,7 @@ function parseSuggestionResponse(response: unknown): Stock[] {
   const data = Array.isArray(table.Data) ? table.Data : [];
   return data
     .map(asRecord)
-    .filter(isOrdinaryAStock)
-    .map(stockFromRecord)
+    .map((record) => stockFromRecord(record))
     .filter((stock): stock is Stock => stock !== null);
 }
 
@@ -319,6 +431,121 @@ function dedupeStocks(stocks: Stock[]): Stock[] {
   });
 }
 
+function searchNeedle(keyword: string): string {
+  return keyword
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/^(?:hk|港股)[:._-]?/i, "")
+    .replace(/[:._-](?:hk|ks|kq|kr)$/i, "");
+}
+
+function explicitKoreanCode(keyword: string): string | null {
+  const raw = keyword.trim().toUpperCase().replace(/\s+/g, "");
+  return raw.match(/^(\d{6})\.(?:KS|KQ|KR)$/)?.[1]
+    ?? raw.match(/^KR[:._-]?(\d{6})$/)?.[1]
+    ?? null;
+}
+
+function explicitHongKongCode(keyword: string): string | null {
+  const raw = keyword.trim().toUpperCase().replace(/\s+/g, "");
+  return raw.match(/^(?:HK[:._-]?)?(\d{1,5})(?:\.HK)?$/)?.[1] ?? null;
+}
+
+function searchConfigsForKeyword(keyword: string): SearchListConfig[] {
+  if (explicitKoreanCode(keyword)) {
+    return searchListConfigs.filter((config) => config.key === "kr-stock");
+  }
+  if (explicitHongKongCode(keyword)) {
+    return searchListConfigs.filter((config) => config.key === "hk-stock");
+  }
+  if (/ETF/i.test(keyword)) {
+    return searchListConfigs.filter((config) => config.key === "etf");
+  }
+  return [...searchListConfigs];
+}
+
+function isSearchContextMatch(stock: Stock, keyword: string): boolean {
+  if (/ETF/i.test(keyword) && stock.kind !== "etf") {
+    return false;
+  }
+  if (explicitKoreanCode(keyword)) {
+    return stock.market === "KR";
+  }
+  if (explicitHongKongCode(keyword)) {
+    return stock.market === "HK";
+  }
+  return true;
+}
+
+function searchScore(stock: Stock, needle: string): number {
+  const code = stock.code.toLowerCase();
+  const name = stock.name.toLowerCase();
+  if (code === needle || name === needle) return 0;
+  if (code.startsWith(needle) || name.startsWith(needle)) return 1;
+  if (code.includes(needle) || name.includes(needle)) return 2;
+  return 3;
+}
+
+async function loadSearchList(config: SearchListConfig): Promise<Stock[]> {
+  const cached = searchListCache.get(config.key);
+  const now = Date.now();
+  if (cached && now - cached.cachedAt < SEARCH_LIST_CACHE_TTL_MS) {
+    return cached.stocks;
+  }
+
+  const records = getDiffRecords(await fetchJson<EastmoneyResponse>(listUrl(config.fs)));
+  const stocks = dedupeStocks(
+    records
+      .filter(config.filter ?? (() => true))
+      .map((record) => stockFromRecord(record, config.kind))
+      .filter((stock): stock is Stock => stock !== null)
+  );
+  searchListCache.set(config.key, { stocks, cachedAt: now });
+  return stocks;
+}
+
+async function searchFromLists(keyword: string): Promise<Stock[]> {
+  const needle = searchNeedle(keyword);
+  const configs = searchConfigsForKeyword(keyword);
+  const settled = await Promise.allSettled(configs.map((config) => loadSearchList(config)));
+  const stocks = settled.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  if (stocks.length === 0 && settled.every((result) => result.status === "rejected")) {
+    throw new Error("行情搜索接口暂时不可用");
+  }
+
+  return dedupeStocks(
+    stocks
+      .filter((stock) => isSearchContextMatch(stock, keyword))
+      .filter((stock) => stock.code.toLowerCase().includes(needle) || stock.name.toLowerCase().includes(needle))
+      .sort((left, right) => searchScore(left, needle) - searchScore(right, needle))
+  ).slice(0, 20);
+}
+
+async function searchExplicitSecurity(keyword: string): Promise<Stock[]> {
+  let secid: string | null = null;
+  const koreanCode = explicitKoreanCode(keyword);
+  const hongKongCode = explicitHongKongCode(keyword);
+  if (koreanCode) {
+    const code = koreanCode;
+    secid = `177.${code}`;
+  } else if (hongKongCode) {
+    const code = hongKongCode;
+    secid = `116.${code.padStart(5, "0")}`;
+  }
+  if (!secid) {
+    return [];
+  }
+
+  try {
+    const payload = await fetchJson<EastmoneyResponse>(detailUrl(secid));
+    const stock = stockFromRecord({ ...asRecord(payload.data), QuoteID: secid }, "stock");
+    return stock ? [stock] : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function searchStocks(keyword: string): Promise<Stock[]> {
   const normalizedKeyword = keyword.trim();
   if (!normalizedKeyword) {
@@ -326,23 +553,35 @@ export async function searchStocks(keyword: string): Promise<Stock[]> {
   }
 
   try {
-    const suggestionResults = dedupeStocks(parseSuggestionResponse(await fetchJson(searchUrl(normalizedKeyword))));
+    const suggestionResults = dedupeStocks(
+      parseSuggestionResponse(await fetchJson(searchUrl(normalizedKeyword)))
+        .filter((stock) => isSearchContextMatch(stock, normalizedKeyword))
+    );
     if (suggestionResults.length > 0) {
       return suggestionResults.slice(0, 20);
     }
   } catch {
-    // The suggestion endpoint is not stable across regions; fall back to the A-share list below.
+    // The suggestion endpoint is not stable across regions; fall back to the market lists below.
   }
 
-  const records = getDiffRecords(await fetchJson<EastmoneyResponse>(listUrl()));
-  const needle = normalizedKeyword.toLowerCase();
-  return dedupeStocks(
-    records
-      .filter(isOrdinaryAStock)
-      .map(stockFromRecord)
-      .filter((stock): stock is Stock => stock !== null)
-      .filter((stock) => stock.code.includes(needle) || stock.name.toLowerCase().includes(needle))
-  ).slice(0, 20);
+  let listError: unknown;
+  try {
+    const listResults = await searchFromLists(normalizedKeyword);
+    if (listResults.length > 0) {
+      return listResults;
+    }
+  } catch (error) {
+    listError = error;
+  }
+
+  const explicitResults = await searchExplicitSecurity(normalizedKeyword);
+  if (explicitResults.length > 0) {
+    return explicitResults;
+  }
+  if (listError instanceof Error) {
+    throw listError;
+  }
+  return [];
 }
 
 function quoteUrl(secids: string[]): string {
@@ -547,7 +786,8 @@ export async function getDetail(stock: Stock): Promise<Quote> {
 }
 
 export function getEastmoneyUrl(stock: Stock): string {
-  return `https://quote.eastmoney.com/${stock.market.toLowerCase()}${stock.code}.html`;
+  // The canonical q/{secid} route also works for ETF, HK (116.xxxxx), and KR (177.xxxxxx).
+  return `https://quote.eastmoney.com/q/${encodeURIComponent(stock.id)}.html`;
 }
 
 export function clearQuoteCache(): void {
