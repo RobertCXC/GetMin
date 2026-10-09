@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, FormEvent, PointerEvent as ReactPointerEvent } from "react";
 import { getEastmoneyUrl } from "../shared/eastmoney";
 import {
@@ -11,6 +11,7 @@ import {
   quoteStatusLabel
 } from "../shared/formatters";
 import { sendExtensionMessage } from "../shared/messages";
+import { isMarketTradingNow } from "../shared/market-hours";
 import {
   ALL_GROUP_ID,
   type AppState,
@@ -260,14 +261,28 @@ export default function App() {
     }
     const requestId = ++trendRequestId.current;
     let busy = false;
-    const refreshTrends = async () => {
+    const lastAttempt = new Map<string, number>();
+    const lastTradingState = new Map<string, boolean>();
+    const refreshTrends = async (initial = false) => {
       if (busy) return;
+      const now = Date.now();
+      const dueStocks = visibleStocks.filter((stock) => {
+        const trading = isMarketTradingNow(stock, new Date(now));
+        const wasTrading = lastTradingState.get(stock.id);
+        lastTradingState.set(stock.id, trading);
+        if (initial || (wasTrading !== undefined && wasTrading !== trading) || (trading && now - (lastAttempt.get(stock.id) ?? 0) >= 2 * 60_000)) {
+          lastAttempt.set(stock.id, now);
+          return true;
+        }
+        return false;
+      });
+      if (dueStocks.length === 0) return;
       busy = true;
       try {
-        for (let index = 0; index < visibleStocks.length; index += 8) {
+        for (let index = 0; index < dueStocks.length; index += 8) {
           const nextTrends = await sendExtensionMessage<IntradayTrend[]>({
             type: "get_trends",
-            stocks: visibleStocks.slice(index, index + 8)
+            stocks: dueStocks.slice(index, index + 8)
           });
           if (requestId !== trendRequestId.current) return;
           setTrends((current) => ({ ...current, ...Object.fromEntries(nextTrends.map((trend) => [trend.secid, trend])) }));
@@ -278,8 +293,8 @@ export default function App() {
         busy = false;
       }
     };
-    void refreshTrends();
-    const timer = window.setInterval(() => void refreshTrends(), 30_000);
+    void refreshTrends(true);
+    const timer = window.setInterval(() => void refreshTrends(), 60_000);
     return () => {
       trendRequestId.current += 1;
       window.clearInterval(timer);
@@ -987,7 +1002,7 @@ function StockRow({
   );
 }
 
-function MiniTrend({ stock, trend, tone }: { stock: Stock; trend?: IntradayTrend; tone: string }) {
+const MiniTrend = memo(function MiniTrend({ stock, trend, tone }: { stock: Stock; trend?: IntradayTrend; tone: string }) {
   const prices = trend?.prices ?? [];
   const prevClose = trend?.prevClose;
   const reference = prevClose && prevClose > 0 ? prevClose : prices[0];
@@ -1020,7 +1035,7 @@ function MiniTrend({ stock, trend, tone }: { stock: Stock; trend?: IntradayTrend
       </svg>
     </span>
   );
-}
+});
 
 function EmptyState({ title, description, actionLabel, onAction }: { title: string; description: string; actionLabel: string; onAction: () => void }) {
   return (
@@ -1443,7 +1458,7 @@ function DetailView({
           )}
           {chartLoading && chart && chart.points.length > 0 && <span className="chart-loading-badge">更新中…</span>}
         </div>
-        {chartError && <div className="chart-error"><span>{chartError}</span><button className="text-button" type="button" onClick={() => void onRefresh()}>重试</button></div>}
+        {(chartError || chart?.stale) && <div className="chart-error"><span>{chartError ? `${chartError}${chart?.points.length ? "；当前显示上次获取的走势" : ""}` : "分时数据暂时无法更新，当前显示上次获取的走势"}</span><button className="text-button" type="button" onClick={() => void onRefresh()}>重试</button></div>}
         <div className="chart-card-footer">
           <span>{chart ? `已加载 ${chart.points.length} 个${chartPeriod === "intraday" ? "分时点" : chartPeriod === "daily" ? "交易日" : "交易周"}` : "切换周期查看历史走势"}</span>
           <span>数据仅供参考</span>

@@ -96,6 +96,7 @@ export type KlineData = {
   prevClose: number | null;
   points: KlinePoint[];
   updatedAt: number | null;
+  stale?: boolean;
 };
 
 export type ExtensionMessage =

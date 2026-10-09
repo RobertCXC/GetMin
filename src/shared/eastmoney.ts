@@ -1,4 +1,5 @@
 import type { IntradayTrend, KlineData, KlinePeriod, KlinePoint, Quote, Stock, StockKind } from "./types";
+import { getMarketSession } from "./market-hours";
 
 const PUSH2_BASE = "https://push2.eastmoney.com";
 const PUSH2HIS_BASE = "https://push2his.eastmoney.com";
@@ -6,6 +7,8 @@ const SEARCH_BASE = "https://searchapi.eastmoney.com";
 const REQUEST_TIMEOUT_MS = 8_000;
 const QUOTE_CACHE_TTL_MS = 8_000;
 const TREND_CACHE_TTL_MS = 30_000;
+const PREVIEW_TREND_CACHE_TTL_MS = 2 * 60_000;
+const CLOSED_TREND_CACHE_TTL_MS = 12 * 60 * 60_000;
 const KLINE_CACHE_TTL_MS = 5 * 60_000;
 const SEARCH_LIST_CACHE_TTL_MS = 10 * 60_000;
 const SUGGEST_TOKEN = "D43BF722C8E33BDC906FB84D85E326E8";
@@ -636,6 +639,9 @@ async function fetchTrend(stock: Stock): Promise<IntradayTrend> {
   const payload = await fetchJson<EastmoneyResponse>(trendUrl(stock.id));
   const data = asRecord(payload.data);
   const rows = Array.isArray(data.trends) ? data.trends : [];
+  if ((payload.rc !== undefined && payload.rc !== 0) || rows.length === 0) {
+    throw new Error(payload.msg || "分时接口暂时没有返回有效数据");
+  }
   const points = rows
     .filter((row): row is string => typeof row === "string")
     .map((row): KlinePoint | null => {
@@ -657,6 +663,9 @@ async function fetchTrend(stock: Stock): Promise<IntradayTrend> {
       };
     })
     .filter((point): point is KlinePoint => point !== null);
+  if (points.length === 0) {
+    throw new Error("分时接口暂时没有返回有效数据");
+  }
   return {
     secid: stock.id,
     prevClose: numberValue(data.prePrice, data.preClose, data.preclose),
@@ -686,7 +695,9 @@ export async function getTrends(stocks: Stock[]): Promise<IntradayTrend[]> {
   const result = new Map<string, IntradayTrend>();
   const missing = uniqueStocks.filter((stock) => {
     const cached = trendCache.get(stock.id);
-    if (cached && Date.now() - cached.cachedAt < TREND_CACHE_TTL_MS) {
+    const session = getMarketSession(stock);
+    const ttl = session.trading ? PREVIEW_TREND_CACHE_TTL_MS : CLOSED_TREND_CACHE_TTL_MS;
+    if (cached && getMarketSession(stock, new Date(cached.cachedAt)).key === session.key && Date.now() - cached.cachedAt < ttl) {
       result.set(stock.id, cached.trend);
       return false;
     }
@@ -723,14 +734,39 @@ export async function getKlines(stock: Stock, period: KlinePeriod, force = false
 
   let data: KlineData;
   if (period === "intraday") {
-    const trend = await fetchTrend(stock);
-    trendCache.set(stock.id, { trend, cachedAt: now });
+    const cachedTrend = trendCache.get(stock.id);
+    const useCachedTrend = !force && cachedTrend && cachedTrend.trend.points.length > 0 && now - cachedTrend.cachedAt <= TREND_CACHE_TTL_MS;
+    let trend: IntradayTrend;
+    let updatedAt: number;
+    try {
+      trend = useCachedTrend ? cachedTrend.trend : await fetchTrend(stock);
+      updatedAt = useCachedTrend ? cachedTrend.cachedAt : Date.now();
+    } catch (error) {
+      const fallback = cached?.data.points.length
+        ? cached.data
+        : cachedTrend?.trend.points.length
+          ? {
+              secid: stock.id,
+              period,
+              prevClose: cachedTrend.trend.prevClose,
+              points: cachedTrend.trend.points,
+              updatedAt: cachedTrend.cachedAt
+            }
+          : null;
+      if (fallback) {
+        return { ...fallback, stale: true };
+      }
+      throw error;
+    }
+    if (!useCachedTrend) {
+      trendCache.set(stock.id, { trend, cachedAt: updatedAt });
+    }
     data = {
       secid: stock.id,
       period,
       prevClose: trend.prevClose,
       points: trend.points,
-      updatedAt: now
+      updatedAt
     };
   } else {
     data = await fetchKline(stock, period);
